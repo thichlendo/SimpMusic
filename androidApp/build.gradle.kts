@@ -276,3 +276,6 @@ if (!isFullBuild) {
         finalizedBy(cleanSentryMetaTask)
     }
 }
+configurations.all {
+    exclude(group = "com.charleskorn.kaml", module = "kaml-jvm")
+}
