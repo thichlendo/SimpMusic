@@ -970,3 +970,6 @@ afterEvaluate {
             dependsOn("generateBuildKonfig")
         }
 }
+configurations.all {
+    exclude(group = "com.charleskorn.kaml", module = "kaml-jvm")
+}
