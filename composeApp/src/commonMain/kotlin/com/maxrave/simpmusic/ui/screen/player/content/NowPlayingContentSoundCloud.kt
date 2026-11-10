@@ -1,8 +1,14 @@
 package com.maxrave.simpmusic.ui.screen.player.content
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -58,6 +64,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TileMode
@@ -71,6 +78,7 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -145,6 +153,7 @@ import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.comment_placeholder
+import simpmusic.composeapp.generated.resources.crossfading
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -378,6 +387,7 @@ private fun NowPlayingSoundCloudLayout(
             timedComments.lastOrNull { now in it.positionMs until it.positionMs + COMMENT_SHOWN_MS }
         }
     }
+    val crossfadeState = rememberDualCardCrossfadeState(state)
 
     Column(
         modifier =
@@ -401,6 +411,7 @@ private fun NowPlayingSoundCloudLayout(
                 showVideo = showVideo,
                 showSubtitle = showSubtitle,
                 lowerBlockHeight = lowerBlockHeight,
+                crossfadeState = crossfadeState,
                 modifier = artworkModifier,
             )
 
@@ -627,6 +638,43 @@ private fun NowPlayingSoundCloudLayout(
                         )
                     }
                 }
+                val sweepTransition = rememberInfiniteTransition(label = "soundCloudCrossfadeSweep")
+                val crossfadeSweep by sweepTransition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec =
+                        infiniteRepeatable(
+                            animation = tween(3200, easing = LinearEasing),
+                            repeatMode = RepeatMode.Restart,
+                        ),
+                    label = "soundCloudSweepHead",
+                )
+                AnimatedVisibility(
+                    visible = timeline.isCrossfading || crossfadeState.isActive,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                ) {
+                    val shimmerSpan = 140f
+                    val shimmerHead = crossfadeSweep * (shimmerSpan * 3f) - shimmerSpan
+                    val labelColor = colors.onSurfaceVariant
+                    Text(
+                        text = stringResource(Res.string.crossfading),
+                        style =
+                            typo().labelMedium.copy(
+                                brush =
+                                    Brush.horizontalGradient(
+                                        0f to labelColor.copy(alpha = 0.45f),
+                                        0.5f to Color.White,
+                                        1f to labelColor.copy(alpha = 0.45f),
+                                        startX = shimmerHead,
+                                        endX = shimmerHead + shimmerSpan,
+                                        tileMode = TileMode.Clamp,
+                                    ),
+                            ),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
                 Spacer(modifier = Modifier.height(12.dp))
                 CommentBox(
                     backdrop = backdrop,
@@ -699,12 +747,14 @@ private fun SoundCloudArtwork(
     showVideo: Boolean,
     showSubtitle: Boolean,
     lowerBlockHeight: IntState,
+    crossfadeState: DualCardCrossfadeState,
     modifier: Modifier = Modifier,
 ) {
     val canvas = state.screenData.canvasData
+    val isCrossfadeActive = crossfadeState.isActive
     Box(modifier = modifier.fillMaxSize()) {
         var canvasReady by remember(canvas?.url) { mutableStateOf(false) }
-        if (canvas != null) {
+        if (canvas != null && !isCrossfadeActive) {
             MediaPlayerView(
                 url = canvas.url,
                 modifier = Modifier.fillMaxSize(),
@@ -712,11 +762,12 @@ private fun SoundCloudArtwork(
                 onFirstFrame = { canvasReady = true },
             )
         }
-        val coverAlpha by animateFloatAsState(
+        val baseCoverAlpha by animateFloatAsState(
             targetValue = if (showVideo || (canvas != null && canvasReady)) 0f else 1f,
             animationSpec = tween(COVER_FADE_MS),
             label = "soundCloudCover",
         )
+        val coverAlpha = if (isCrossfadeActive) 0f else baseCoverAlpha
         var artworkUrl by remember(state.screenData.thumbnailURL) { mutableStateOf(state.screenData.thumbnailURL) }
         val request =
             ImageRequest
@@ -764,7 +815,24 @@ private fun SoundCloudArtwork(
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize().alpha(coverAlpha).then(lowerBlur),
         )
-        if (showVideo) {
+        if (isCrossfadeActive) {
+            DynamicAmbientDarkGradient(
+                transitionProgress = crossfadeState.transitionProgress,
+                oldTrackColor = crossfadeState.oldTrackColor,
+                newTrackColor = crossfadeState.newTrackColor,
+                modifier = Modifier.fillMaxSize(),
+            )
+            val lowerBlockDp = with(LocalDensity.current) { lowerBlockHeight.intValue.toDp() }
+            DualCard3DTransitionOverlay(
+                crossfadeState = crossfadeState,
+                settledCornerRadius = 16.dp,
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .padding(bottom = lowerBlockDp),
+            )
+        }
+        if (showVideo && !isCrossfadeActive) {
             BoxWithConstraints(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLowest)) {
                 // A frame of the video's own shape, as M3 Expressive and the Apple Music style give
                 // theirs. Without it the view grows to the whole card (its subtitle layer fills its

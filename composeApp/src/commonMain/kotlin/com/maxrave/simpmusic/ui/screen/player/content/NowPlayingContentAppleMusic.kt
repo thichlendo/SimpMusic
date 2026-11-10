@@ -210,14 +210,25 @@ fun NowPlayingContentAppleMusic(
     // the button, never its parent: nesting the button inside the source is the render-feedback
     // loop that crashes the RuntimeShader.
     val panelBackdrop = rememberBackdrop(Color.Black)
+    val crossfadeState = rememberDualCardCrossfadeState(state)
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         Box(modifier = Modifier.matchParentSize().layerBackdrop(panelBackdrop)) {
-            AppleMusicArtworkBackdrop(state = state, actions = actions, seedColor = seedColor)
+            Box(modifier = Modifier.fillMaxSize().alpha(if (crossfadeState.isActive) 0f else 1f)) {
+                AppleMusicArtworkBackdrop(state = state, actions = actions, seedColor = seedColor)
+            }
+            if (crossfadeState.isActive) {
+                DynamicAmbientDarkGradient(
+                    transitionProgress = crossfadeState.transitionProgress,
+                    oldTrackColor = crossfadeState.oldTrackColor,
+                    newTrackColor = crossfadeState.newTrackColor,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
             // Flat black only for a CANVAS (it fills the screen). A video letterboxes, so a black page
             // turns the bars above and below it into dead black slabs — keep the artwork-tinted
             // gradient there.
-            if (canvasBackdropAlpha > 0f) {
+            if (canvasBackdropAlpha > 0f && !crossfadeState.isActive) {
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = canvasBackdropAlpha)))
             }
         }
@@ -236,6 +247,7 @@ fun NowPlayingContentAppleMusic(
                         deviceVolumeController = deviceVolumeController,
                         outputName = outputName,
                         onOpenOutput = openOutput,
+                        crossfadeState = crossfadeState,
                     )
 
                 AppleMusicView.LYRICS ->
@@ -362,6 +374,7 @@ private fun AppleMusicMainView(
     deviceVolumeController: DeviceVolumeController?,
     outputName: String?,
     onOpenOutput: () -> Unit,
+    crossfadeState: DualCardCrossfadeState,
 ) {
     val localDensity = LocalDensity.current
     val isRepeatOne = state.controllerState.repeatState is RepeatState.One
@@ -434,7 +447,17 @@ private fun AppleMusicMainView(
         // one colour into the other's dissolve.
         val topHold =
             if (topInset > 0.dp) topInset + topFade + ((shownHeight - topFade - artworkFade) / 2).coerceAtLeast(0.dp) else 0.dp
-        if (meshPage) AppleMusicMeshBackdrop(mesh = mesh, seam = meshSeam, topHold = topHold)
+        if (meshPage && !crossfadeState.isActive) {
+            AppleMusicMeshBackdrop(mesh = mesh, seam = meshSeam, topHold = topHold)
+        }
+        if (crossfadeState.isActive) {
+            DynamicAmbientDarkGradient(
+                transitionProgress = crossfadeState.transitionProgress,
+                oldTrackColor = crossfadeState.oldTrackColor,
+                newTrackColor = crossfadeState.newTrackColor,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
 
         // The band under the status bar and the grabber, darkened (the wash below) so their white
         // glyphs survive a bright top band. Android only — Desktop has neither, and its dismiss button
@@ -444,9 +467,9 @@ private fun AppleMusicMainView(
         LeftToRight {
             HorizontalPager(
                 state = state.artworkPagerState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().alpha(if (crossfadeState.isActive) 0f else 1f),
                 beyondViewportPageCount = 1,
-                userScrollEnabled = !isRepeatOne && state.artworkQueue.isNotEmpty(),
+                userScrollEnabled = !isRepeatOne && state.artworkQueue.isNotEmpty() && !crossfadeState.isActive,
                 key = { idx ->
                     val vid = state.artworkQueue.getOrNull(idx)?.videoId.orEmpty()
                     "appleMusicArtwork_${vid}_$idx"
@@ -465,6 +488,7 @@ private fun AppleMusicMainView(
                     fullscreenCanvas = fullscreenCanvas,
                     animatedArtwork = animatedArtwork,
                     isVideoBackdrop = isVideoBackdrop,
+                    isCrossfadeActive = crossfadeState.isActive,
                     showVideoOverlay = showVideoOverlay,
                     onToggleVideoOverlay = { showVideoOverlay = !showVideoOverlay },
                     showSubtitle = showSubtitle,
@@ -478,12 +502,24 @@ private fun AppleMusicMainView(
             }
         }
 
+        if (crossfadeState.isActive) {
+            DualCard3DTransitionOverlay(
+                crossfadeState = crossfadeState,
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = topInset)
+                        .fillMaxWidth()
+                        .height(artworkHeight),
+            )
+        }
+
         // Android plays the animated artwork on a SurfaceView, which no Compose mask or alpha reaches:
         // masked like the cover, the clip still ended in a hard edge across the page. So the page is
         // laid back OVER the clip's lower part instead — the same mesh at the same size and seam, so it
         // matches the page beneath it pixel for pixel — faded in over the stretch the cover dissolves
         // over, ending at the clip's bottom edge.
-        if (meshPage && animatedArtwork != null && clipFrameHeight > 0.dp) {
+        if (meshPage && animatedArtwork != null && clipFrameHeight > 0.dp && !crossfadeState.isActive) {
             AppleMusicMeshBackdrop(
                 mesh = mesh,
                 seam = meshSeam,
@@ -920,6 +956,7 @@ private fun AppleMusicArtworkPage(
     fullscreenCanvas: Boolean,
     animatedArtwork: NowPlayingScreenData.CanvasData?,
     isVideoBackdrop: Boolean,
+    isCrossfadeActive: Boolean,
     showVideoOverlay: Boolean,
     onToggleVideoOverlay: () -> Unit,
     showSubtitle: Boolean,
@@ -930,7 +967,7 @@ private fun AppleMusicArtworkPage(
     val pageTrack = state.artworkQueue.getOrNull(page)
     val isCurrentPage = page == state.currentOrderIndex
     val pageShowsFullscreen = isCurrentPage && (fullscreenCanvas || isVideoBackdrop)
-    val pageShowsClip = isCurrentPage && animatedArtwork != null
+    val pageShowsClip = isCurrentPage && animatedArtwork != null && !isCrossfadeActive
     // How much of the artwork dissolves into the page: 42% of the frame, on a smoothstep curve
     // (appleMusicVerticalFadeEdges), so there is no line where the fade starts.
     val artworkFade = artworkHeight * ARTWORK_FADE_FRACTION
@@ -954,7 +991,7 @@ private fun AppleMusicArtworkPage(
                     .diskCacheKey(artworkUrl + "BIGGER")
                     .crossfade(550)
                     .build()
-            val coverAlpha = if (pageShowsFullscreen) 0f else 1f - clipAlpha
+            val coverAlpha = if (pageShowsFullscreen || isCrossfadeActive) 0f else 1f - clipAlpha
             Box(
                 modifier =
                     Modifier
@@ -1005,7 +1042,7 @@ private fun AppleMusicArtworkPage(
                     },
                 )
             }
-            if (pageShowsFullscreen) {
+            if (pageShowsFullscreen && !isCrossfadeActive) {
                 if (isVideoBackdrop) {
                     // Centre the video in the region ABOVE the controls (top → cluster), not in
                     // the whole screen: screen-centred, half of a 16:9 video sat behind the
@@ -1190,7 +1227,7 @@ private fun AppleMusicArtworkPage(
                     )
                 }
             }
-        } else if (pageTrack != null) {
+        } else if (pageTrack != null && !isCrossfadeActive) {
             val staticThumb = pageTrack.thumbnails?.maxByOrNull { it.width * it.height }?.url
             val thumbRequest =
                 ImageRequest
