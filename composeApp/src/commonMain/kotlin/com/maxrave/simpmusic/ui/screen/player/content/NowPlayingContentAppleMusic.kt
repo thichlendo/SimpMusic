@@ -214,7 +214,7 @@ fun NowPlayingContentAppleMusic(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         Box(modifier = Modifier.matchParentSize().layerBackdrop(panelBackdrop)) {
-            Box(modifier = Modifier.fillMaxSize().alpha(if (crossfadeState.isActive) 0f else 1f)) {
+            Box(modifier = Modifier.fillMaxSize().alpha(1f - crossfadeState.ambientAlpha)) {
                 AppleMusicArtworkBackdrop(state = state, actions = actions, seedColor = seedColor)
             }
             if (crossfadeState.isActive) {
@@ -222,6 +222,9 @@ fun NowPlayingContentAppleMusic(
                     transitionProgress = crossfadeState.transitionProgress,
                     oldTrackColor = crossfadeState.oldTrackColor,
                     newTrackColor = crossfadeState.newTrackColor,
+                    enterProgress = crossfadeState.enterProgress,
+                    exitProgress = crossfadeState.exitProgress,
+                    alpha = crossfadeState.ambientAlpha,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -414,13 +417,32 @@ private fun AppleMusicMainView(
     var clipStill by remember(animatedArtwork?.url) { mutableStateOf<ImageBitmap?>(null) }
     var clipFrameHeight by remember(animatedArtwork?.url) { mutableStateOf(0.dp) }
 
+    // Keep coverBitmap and the pager page synchronized with the incoming track during crossfade
+    // so the mesh backdrop and cover are already settled when the 500ms Exit animation finishes.
+    LaunchedEffect(crossfadeState.newBitmap) {
+        crossfadeState.newBitmap?.let { bmp ->
+            coverBitmap = bmp
+            actions.onArtworkBitmap(bmp)
+        }
+    }
+    LaunchedEffect(crossfadeState.isActive, state.currentOrderIndex) {
+        val target = state.currentOrderIndex
+        if (crossfadeState.isActive &&
+            target in 0 until state.artworkQueue.size &&
+            state.artworkPagerState.currentPage != target &&
+            !state.artworkPagerState.isScrollInProgress
+        ) {
+            runCatching { state.artworkPagerState.scrollToPage(target) }
+        }
+    }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         // A full-width square: the cover at its own proportions, nothing cut off either side. Capped
         // for a landscape window, where a full-width square would be taller than the page.
         val artworkHeight = minOf(maxWidth, maxHeight * ARTWORK_MAX_HEIGHT_FRACTION)
         val clipMaxHeight = maxHeight * ANIMATED_ARTWORK_MAX_HEIGHT_FRACTION
         val artworkFade = artworkHeight * ARTWORK_FADE_FRACTION
-        val showsClip = animatedArtwork != null && clipStill != null
+        val showsClip = animatedArtwork != null && clipStill != null && !crossfadeState.isActive
 
         // The page itself. A video keeps the frosted cover behind it and a fullscreen canvas the black
         // page, as before; everything else stands on the mesh, hung from where the artwork ends.
@@ -447,7 +469,7 @@ private fun AppleMusicMainView(
         // one colour into the other's dissolve.
         val topHold =
             if (topInset > 0.dp) topInset + topFade + ((shownHeight - topFade - artworkFade) / 2).coerceAtLeast(0.dp) else 0.dp
-        if (meshPage && !crossfadeState.isActive) {
+        if (meshPage && crossfadeState.ambientAlpha < 1f) {
             AppleMusicMeshBackdrop(mesh = mesh, seam = meshSeam, topHold = topHold)
         }
         if (crossfadeState.isActive) {
@@ -455,6 +477,9 @@ private fun AppleMusicMainView(
                 transitionProgress = crossfadeState.transitionProgress,
                 oldTrackColor = crossfadeState.oldTrackColor,
                 newTrackColor = crossfadeState.newTrackColor,
+                enterProgress = crossfadeState.enterProgress,
+                exitProgress = crossfadeState.exitProgress,
+                alpha = crossfadeState.ambientAlpha,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -505,6 +530,9 @@ private fun AppleMusicMainView(
         if (crossfadeState.isActive) {
             DualCard3DTransitionOverlay(
                 crossfadeState = crossfadeState,
+                settledCornerRadius = 0.dp,
+                settledTopFade = topFade,
+                settledBottomFade = artworkFade,
                 modifier =
                     Modifier
                         .align(Alignment.TopCenter)
@@ -982,14 +1010,16 @@ private fun AppleMusicArtworkPage(
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (isCurrentPage) {
-            var artworkUrl by remember(state.screenData.thumbnailURL) { mutableStateOf(state.screenData.thumbnailURL) }
+            val pageThumbUrl = pageTrack?.thumbnails?.maxByOrNull { it.width * it.height }?.url
+            val resolvedArtworkUrl = state.screenData.thumbnailURL?.takeIf { it.isNotBlank() } ?: pageThumbUrl
+            var artworkUrl by remember(resolvedArtworkUrl) { mutableStateOf(resolvedArtworkUrl) }
             val coverRequest =
                 ImageRequest
                     .Builder(LocalPlatformContext.current)
                     .data(artworkUrl)
                     .diskCachePolicy(CachePolicy.ENABLED)
-                    .diskCacheKey(artworkUrl + "BIGGER")
-                    .crossfade(550)
+                    .diskCacheKey((artworkUrl ?: "") + "BIGGER")
+                    .crossfade(if (isCrossfadeActive) 0 else 550)
                     .build()
             val coverAlpha = if (pageShowsFullscreen || isCrossfadeActive) 0f else 1f - clipAlpha
             Box(
