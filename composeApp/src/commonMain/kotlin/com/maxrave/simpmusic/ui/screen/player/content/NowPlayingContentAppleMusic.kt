@@ -2,6 +2,7 @@ package com.maxrave.simpmusic.ui.screen.player.content
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -390,8 +391,8 @@ private fun AppleMusicMainView(
     // Same fade/half-blended-frame fix M3E uses: fast fade-in, relaxed fade-out. Only a fullscreen
     // canvas ever hides the controls — every other artwork sits above them, not behind them.
     val controlsAlpha by animateFloatAsState(
-        targetValue = if (!fullscreenCanvas || state.showControlLayout) 1f else 0f,
-        animationSpec = tween(durationMillis = if (!fullscreenCanvas || state.showControlLayout) 180 else 500, easing = LinearEasing),
+        targetValue = if (!fullscreenCanvas || state.showControlLayout || crossfadeState.isActive) 1f else 0f,
+        animationSpec = tween(durationMillis = if (!fullscreenCanvas || state.showControlLayout || crossfadeState.isActive) 180 else 500, easing = LinearEasing),
         label = "appleMusicControlsAlpha",
     )
 
@@ -656,7 +657,12 @@ private fun AppleMusicMainView(
                                 with(localDensity) { coords.size.height.toDp().value.toInt() }
                         },
             ) {
-                AppleMusicMainTitleRow(state = state, actions = actions, typography = typography)
+                AppleMusicMainTitleRow(
+                    state = state,
+                    actions = actions,
+                    typography = typography,
+                    crossfadeState = crossfadeState,
+                )
                 Spacer(modifier = Modifier.height(20.dp))
                 AppleMusicLyricStrip(
                     state = state,
@@ -682,7 +688,7 @@ private fun AppleMusicMainView(
             // canvas has auto-hidden them, mirroring M3E's canvas-unfocused overlay verbatim.
             if (fullscreenCanvas) {
                 AnimatedVisibility(
-                    visible = !state.showControlLayout,
+                    visible = !state.showControlLayout && !crossfadeState.isActive,
                     enter = fadeIn(),
                     exit = fadeOut(),
                 ) {
@@ -920,42 +926,85 @@ internal fun BoxScope.AppleMusicArtworkBackdrop(
     Box(modifier = Modifier.fillMaxSize().alpha(BACKDROP_TINT_ALPHA).background(backdropBrush))
 }
 
+private data class AppleMusicDisplayTrackInfo(
+    val title: String,
+    val artist: String,
+    val isExplicit: Boolean,
+)
+
 @Composable
 internal fun AppleMusicMainTitleRow(
     state: NowPlayingContentState,
     actions: NowPlayingContentActions,
     typography: AppleMusicTypography,
+    crossfadeState: DualCardCrossfadeState? = null,
 ) {
+    val isIncoming =
+        crossfadeState?.let {
+            it.transitionState == CrossfadeTransitionState.EXITING ||
+                it.transitionProgress >= 0.5f
+        } ?: true
+
+    val currentDisplayInfo =
+        if (crossfadeState != null && crossfadeState.isActive) {
+            if (isIncoming) {
+                AppleMusicDisplayTrackInfo(
+                    title = crossfadeState.newTitle?.takeIf { it.isNotBlank() } ?: state.screenData.nowPlayingTitle,
+                    artist = crossfadeState.newArtist?.takeIf { it.isNotBlank() } ?: state.screenData.artistName,
+                    isExplicit = state.screenData.isExplicit,
+                )
+            } else {
+                AppleMusicDisplayTrackInfo(
+                    title = crossfadeState.oldTitle?.takeIf { it.isNotBlank() } ?: state.screenData.nowPlayingTitle,
+                    artist = crossfadeState.oldArtist?.takeIf { it.isNotBlank() } ?: state.screenData.artistName,
+                    isExplicit = false,
+                )
+            }
+        } else {
+            AppleMusicDisplayTrackInfo(
+                title = state.screenData.nowPlayingTitle,
+                artist = state.screenData.artistName,
+                isExplicit = state.screenData.isExplicit,
+            )
+        }
+
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = state.screenData.nowPlayingTitle,
-                style = typography.mainTitle,
-                maxLines = 1,
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .basicMarquee(iterations = Int.MAX_VALUE, animationMode = MarqueeAnimationMode.Immediately)
-                        .focusable(),
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (state.screenData.isExplicit) {
-                    ExplicitBadge(modifier = Modifier.size(20.dp).padding(end = 4.dp))
-                }
+        Crossfade(
+            targetState = currentDisplayInfo,
+            animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+            modifier = Modifier.weight(1f),
+            label = "appleMusicTitleCrossfade",
+        ) { trackInfo ->
+            Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = state.screenData.artistName,
-                    style = typography.mainArtist,
+                    text = trackInfo.title,
+                    style = typography.mainTitle,
                     maxLines = 1,
                     modifier =
                         Modifier
+                            .fillMaxWidth()
                             .basicMarquee(iterations = Int.MAX_VALUE, animationMode = MarqueeAnimationMode.Immediately)
-                            .focusable()
-                            .clickable { actions.onNavigateToArtist() },
+                            .focusable(),
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (trackInfo.isExplicit) {
+                        ExplicitBadge(modifier = Modifier.size(20.dp).padding(end = 4.dp))
+                    }
+                    Text(
+                        text = trackInfo.artist,
+                        style = typography.mainArtist,
+                        maxLines = 1,
+                        modifier =
+                            Modifier
+                                .basicMarquee(iterations = Int.MAX_VALUE, animationMode = MarqueeAnimationMode.Immediately)
+                                .focusable()
+                                .clickable { actions.onNavigateToArtist() },
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.width(12.dp))

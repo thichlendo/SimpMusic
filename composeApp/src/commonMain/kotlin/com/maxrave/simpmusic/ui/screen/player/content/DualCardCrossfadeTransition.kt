@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -51,8 +52,6 @@ import com.maxrave.simpmusic.expect.ui.toReadableBitmap
 import com.maxrave.simpmusic.ui.component.rememberHolderPainter
 import com.maxrave.simpmusic.ui.screen.player.content.applemusic.appleMusicVerticalFadeEdges
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.compose.koinInject
 import kotlin.math.PI
@@ -81,6 +80,20 @@ private const val DEFAULT_CROSSFADE_DURATION_MS = 5000
 private val DefaultLeftAmbientColor = Color(0xFF4A2520)
 private val DefaultRightAmbientColor = Color(0xFF28354A)
 private val AmbientBaseDarkColor = Color(0xFF101014)
+
+/**
+ * Transition state machine for 3D Dual-Card Crossfade.
+ * - IDLE: Normal playback, single card.
+ * - ENTERING: 500ms enter animation (outgoing card scales down to 0.58f & slides left; incoming card slides in from right).
+ * - CROSSFADING: Parallel hold of both cards side-by-side throughout the entire crossfade duration.
+ * - EXITING: 500ms exit animation triggered when crossfade audio ends (old card fades out; new card slides to center offset X = 0 and scales up to 1.0f).
+ */
+enum class CrossfadeTransitionState {
+    IDLE,
+    ENTERING,
+    CROSSFADING,
+    EXITING,
+}
 
 /**
  * Pose of a single 3D album card at a given transition state.
@@ -161,7 +174,7 @@ fun newCardPose(
         centerX = heldX + (centerX - heldX) * exit,
         scale = HOLD_SCALE + (1f - HOLD_SCALE) * exit,
         rotationY = RIGHT_ROTATION_Y_DEG * (1f - exit),
-        alpha = (enter + (1f - enter) * exit).coerceIn(0f, 1f),
+        alpha = (enter * (1f - exit) + exit).coerceIn(0f, 1f),
     )
 }
 
@@ -194,17 +207,22 @@ class DualCardCrossfadeState(
     val transitionProgress: Float,
     val enterProgress: Float,
     val exitProgress: Float,
-    val isCrossfading: Boolean,
+    val transitionState: CrossfadeTransitionState = CrossfadeTransitionState.IDLE,
+    val isCrossfading: Boolean = false,
     val oldThumbnailUrl: String?,
     val newThumbnailUrl: String?,
     val oldTrackColor: Color,
     val newTrackColor: Color,
+    val oldTitle: String? = null,
+    val oldArtist: String? = null,
+    val newTitle: String? = null,
+    val newArtist: String? = null,
     val newBitmap: ImageBitmap? = null,
     internal val onOldBitmapLoaded: (ImageBitmap) -> Unit,
     internal val onNewBitmapLoaded: (ImageBitmap) -> Unit,
 ) {
     val isActive: Boolean
-        get() = isCrossfading || enterProgress > 0f || exitProgress > 0f || transitionProgress > 0f
+        get() = transitionState != CrossfadeTransitionState.IDLE
 
     val ambientAlpha: Float
         get() = (enterProgress * (1f - exitProgress)).coerceIn(0f, 1f)
@@ -213,13 +231,14 @@ class DualCardCrossfadeState(
 /**
  * Remembers and drives the [DualCardCrossfadeState] from [NowPlayingContentState].
  *
- * Dynamically synchronizes 1:1 with the user's configured [DataStoreManager.crossfadeDuration] and
- * live crossfade state:
- * - Enter: 500ms with [FastOutSlowInEasing] when crossfade begins.
- * - Parallel Hold: Keeps both cards side-by-side throughout the entire crossfade duration
- *   (whether 3s, 5s, 8s, 12s, or any configured duration) until the outgoing track finishes.
- * - Exit: 500ms with [FastOutSlowInEasing] at the exact moment crossfade ends, settling the
- *   incoming card to center (1.0f) seamlessly without snapping.
+ * State Machine implementation:
+ * - IDLE: Normal single-card playback.
+ * - ENTERING (500ms, FastOutSlowInEasing): Triggered when [isCrossfading] becomes true.
+ * - CROSSFADING: Parallel hold of both cards for the entire crossfade duration.
+ * - EXITING (500ms, FastOutSlowInEasing): Triggered when [isCrossfading] becomes false.
+ *   Keeps the 2-card layout intact; slides the incoming card into center (offset X = 0)
+ *   while scaling 0.58f -> 1.0f.
+ * - ONLY after exit animation completes does state return to IDLE.
  */
 @Composable
 fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCrossfadeState {
@@ -238,17 +257,27 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
                 ?.maxByOrNull { it.width * it.height }
                 ?.url
     val currentPaletteColor = state.startColor.value.takeIf { it != Color.Black }
+    val currentTitle = state.screenData.nowPlayingTitle
+    val currentArtist = state.screenData.artistName
+
+    var transitionState by remember { mutableStateOf(CrossfadeTransitionState.IDLE) }
 
     // Last stable (non-crossfading) track snapshot
     var lastStableVideoId by remember { mutableStateOf<String?>(null) }
     var lastStableThumbUrl by remember { mutableStateOf<String?>(null) }
     var lastStableColor by remember { mutableStateOf(DefaultLeftAmbientColor) }
+    var lastStableTitle by remember { mutableStateOf("") }
+    var lastStableArtist by remember { mutableStateOf("") }
     var lastStableRemainingMs by remember { mutableLongStateOf(DEFAULT_CROSSFADE_DURATION_MS.toLong()) }
 
     // Active crossfade pair
     var outgoingVideoId by remember { mutableStateOf<String?>(null) }
     var outgoingThumbUrl by remember { mutableStateOf<String?>(null) }
+    var outgoingTitle by remember { mutableStateOf<String?>(null) }
+    var outgoingArtist by remember { mutableStateOf<String?>(null) }
     var incomingThumbUrl by remember { mutableStateOf<String?>(null) }
+    var incomingTitle by remember { mutableStateOf<String?>(null) }
+    var incomingArtist by remember { mutableStateOf<String?>(null) }
     var oldColor by remember { mutableStateOf(DefaultLeftAmbientColor) }
     var newColor by remember { mutableStateOf(DefaultRightAmbientColor) }
 
@@ -262,7 +291,7 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
     val enterProgress = enterAnim.value
     val exitProgress = exitAnim.value
     val transitionProgress = mixAnim.value
-    val isVisualIdle = !isCrossfading && enterProgress == 0f && exitProgress == 0f && transitionProgress == 0f
+    val isVisualIdle = transitionState == CrossfadeTransitionState.IDLE
 
     // Track remaining playback time while not crossfading so Auto/dynamic crossfade knows the exact window
     val timelineCurrent = state.timelineState.current
@@ -281,7 +310,7 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
         val bmp = state.screenData.bitmap ?: return@LaunchedEffect
         val extracted = withContext(Dispatchers.Default) { extractVibrantAmbientColor(bmp) }
         if (extracted != null) {
-            if (!isCrossfading && enterAnim.value == 0f) {
+            if (isVisualIdle) {
                 lastStableColor = extracted
             } else if (currentVideoId != outgoingVideoId) {
                 newColor = extracted
@@ -304,7 +333,7 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
     }
 
     // Update stable snapshot while playing normally (not crossfading)
-    LaunchedEffect(currentVideoId, currentThumbUrl, currentPaletteColor, isVisualIdle, isCrossfading) {
+    LaunchedEffect(currentVideoId, currentThumbUrl, currentTitle, currentArtist, currentPaletteColor, isVisualIdle) {
         if (isVisualIdle) {
             if (!currentVideoId.isNullOrEmpty()) {
                 lastStableVideoId = currentVideoId
@@ -312,16 +341,14 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
             if (!currentThumbUrl.isNullOrBlank()) {
                 lastStableThumbUrl = currentThumbUrl
             }
+            if (currentTitle.isNotBlank()) {
+                lastStableTitle = currentTitle
+            }
+            if (currentArtist.isNotBlank()) {
+                lastStableArtist = currentArtist
+            }
             if (currentPaletteColor != null) {
                 lastStableColor = liftAmbientColor(currentPaletteColor)
-            }
-        } else if (isCrossfading) {
-            // Once nowPlayingState advances to the incoming song during crossfade, capture its URL & color
-            if (currentVideoId != null && currentVideoId != outgoingVideoId && !currentThumbUrl.isNullOrBlank()) {
-                incomingThumbUrl = currentThumbUrl
-            }
-            if (currentVideoId != null && currentVideoId != outgoingVideoId && currentPaletteColor != null) {
-                newColor = liftAmbientColor(currentPaletteColor)
             }
         }
     }
@@ -330,100 +357,116 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
     val latestOrderIndex by rememberUpdatedState(state.currentOrderIndex)
     val latestThumbUrl by rememberUpdatedState(currentThumbUrl)
     val latestVideoId by rememberUpdatedState(currentVideoId)
+    val latestTitle by rememberUpdatedState(currentTitle)
+    val latestArtist by rememberUpdatedState(currentArtist)
     val latestPaletteColor by rememberUpdatedState(currentPaletteColor)
     val latestConfiguredDuration by rememberUpdatedState(configuredDurationMs)
 
-    // Drive Enter -> Parallel Hold (1:1 dynamic crossfade duration) -> Exit from isCrossfading
+    // State Machine execution: IDLE -> ENTERING -> CROSSFADING -> EXITING -> IDLE
     LaunchedEffect(isCrossfading) {
         if (isCrossfading) {
-            val queue = latestQueue
-            val idx = latestOrderIndex
-            val prevQueueThumb =
-                queue
-                    .getOrNull(idx - 1)
-                    ?.thumbnails
-                    ?.maxByOrNull { it.width * it.height }
-                    ?.url
-            val nextQueueThumb =
-                queue
-                    .getOrNull(idx + 1)
-                    ?.thumbnails
-                    ?.maxByOrNull { it.width * it.height }
-                    ?.url
-            val currQueueThumb =
-                queue
-                    .getOrNull(idx)
-                    ?.thumbnails
-                    ?.maxByOrNull { it.width * it.height }
-                    ?.url
+            if (transitionState == CrossfadeTransitionState.IDLE || transitionState == CrossfadeTransitionState.EXITING) {
+                val queue = latestQueue
+                val idx = latestOrderIndex
+                val prevTrack = queue.getOrNull(idx - 1)
+                val nextTrack = queue.getOrNull(idx + 1)
+                val currTrack = queue.getOrNull(idx)
 
-            // Determine whether currentOrderIndex has already moved to the incoming track
-            val alreadyAdvanced =
-                lastStableVideoId != null &&
-                    latestVideoId != null &&
-                    latestVideoId != lastStableVideoId
+                val prevQueueThumb = prevTrack?.thumbnails?.maxByOrNull { it.width * it.height }?.url
+                val nextQueueThumb = nextTrack?.thumbnails?.maxByOrNull { it.width * it.height }?.url
+                val currQueueThumb = currTrack?.thumbnails?.maxByOrNull { it.width * it.height }?.url
 
-            outgoingVideoId = lastStableVideoId ?: queue.getOrNull(if (alreadyAdvanced) idx - 1 else idx)?.videoId
-            outgoingThumbUrl =
-                lastStableThumbUrl
-                    ?: (if (alreadyAdvanced) prevQueueThumb else latestThumbUrl ?: currQueueThumb)
-            oldColor = lastStableColor
+                val prevArtist = prevTrack?.artists?.joinToString(", ") { it.name }
+                val nextArtist = nextTrack?.artists?.joinToString(", ") { it.name }
+                val currArtist = currTrack?.artists?.joinToString(", ") { it.name }
 
-            incomingThumbUrl =
-                if (alreadyAdvanced) {
-                    latestThumbUrl ?: currQueueThumb
-                } else {
-                    nextQueueThumb ?: latestThumbUrl
-                }
+                val alreadyAdvanced =
+                    lastStableVideoId != null &&
+                        latestVideoId != null &&
+                        latestVideoId != lastStableVideoId
 
-            // Dynamic duration resolved directly from user settings (crossfadeDuration) and remaining track time
-            val durConfig = latestConfiguredDuration
-            val dynamicDurationMs =
-                if (durConfig > 0) {
-                    val rem = lastStableRemainingMs
-                    if (rem in 1000L..durConfig.toLong()) rem.toInt() else durConfig
-                } else {
-                    lastStableRemainingMs
-                        .takeIf { it > 0L }
-                        ?.coerceAtLeast(1000L)
-                        ?.toInt()
-                        ?: DEFAULT_CROSSFADE_DURATION_MS
-                }
+                outgoingVideoId = lastStableVideoId ?: queue.getOrNull(if (alreadyAdvanced) idx - 1 else idx)?.videoId
+                outgoingThumbUrl =
+                    lastStableThumbUrl
+                        ?: (if (alreadyAdvanced) prevQueueThumb else latestThumbUrl ?: currQueueThumb)
+                outgoingTitle =
+                    lastStableTitle.takeIf { it.isNotBlank() }
+                        ?: (if (alreadyAdvanced) prevTrack?.title else latestTitle.takeIf { it.isNotBlank() } ?: currTrack?.title)
+                outgoingArtist =
+                    lastStableArtist.takeIf { it.isNotBlank() }
+                        ?: (if (alreadyAdvanced) prevArtist else latestArtist.takeIf { it.isNotBlank() } ?: currArtist)
+                oldColor = lastStableColor
 
-            exitAnim.snapTo(0f)
-            enterAnim.snapTo(0f)
-            mixAnim.snapTo(0.001f)
+                incomingThumbUrl =
+                    if (alreadyAdvanced) {
+                        latestThumbUrl ?: currQueueThumb
+                    } else {
+                        nextQueueThumb ?: latestThumbUrl
+                    }
+                incomingTitle =
+                    if (alreadyAdvanced) {
+                        latestTitle.takeIf { it.isNotBlank() } ?: currTrack?.title
+                    } else {
+                        nextTrack?.title ?: latestTitle
+                    }
+                incomingArtist =
+                    if (alreadyAdvanced) {
+                        latestArtist.takeIf { it.isNotBlank() } ?: currArtist
+                    } else {
+                        nextArtist ?: latestArtist
+                    }
 
-            coroutineScope {
+                val durConfig = latestConfiguredDuration
+                val dynamicDurationMs =
+                    if (durConfig > 0) {
+                        val rem = lastStableRemainingMs
+                        if (rem in 1000L..durConfig.toLong()) rem.toInt() else durConfig
+                    } else {
+                        lastStableRemainingMs
+                            .takeIf { it > 0L }
+                            ?.coerceAtLeast(1000L)
+                            ?.toInt()
+                            ?: DEFAULT_CROSSFADE_DURATION_MS
+                    }
+
+                exitAnim.snapTo(0f)
+                enterAnim.snapTo(0f)
+                mixAnim.snapTo(0.001f)
+                transitionState = CrossfadeTransitionState.ENTERING
+
                 // 2. Enter animation: 500ms FastOutSlowInEasing
-                launch {
-                    enterAnim.animateTo(
-                        targetValue = 1f,
-                        animationSpec =
-                            tween(
-                                durationMillis = ENTER_DURATION_MS,
-                                easing = FastOutSlowInEasing,
-                            ),
-                    )
-                }
-                // 1. Dynamic crossfade progress over the actual crossfade duration;
-                // both cards remain held in parallel for the entire time isCrossfading is true.
-                launch {
-                    mixAnim.animateTo(
-                        targetValue = 1f,
-                        animationSpec =
-                            tween(
-                                durationMillis = dynamicDurationMs.coerceAtLeast(ENTER_DURATION_MS),
-                                easing = LinearEasing,
-                            ),
-                    )
-                }
+                enterAnim.animateTo(
+                    targetValue = 1f,
+                    animationSpec =
+                        tween(
+                            durationMillis = ENTER_DURATION_MS,
+                            easing = FastOutSlowInEasing,
+                        ),
+                )
+
+                // Move to CROSSFADING (holding 2 cards in parallel)
+                transitionState = CrossfadeTransitionState.CROSSFADING
+
+                // Parallel hold: mixAnim progresses over remaining time
+                mixAnim.animateTo(
+                    targetValue = 1f,
+                    animationSpec =
+                        tween(
+                            durationMillis = (dynamicDurationMs - ENTER_DURATION_MS).coerceAtLeast(1000),
+                            easing = LinearEasing,
+                        ),
+                )
             }
         } else {
-            if (enterAnim.value > 0f || mixAnim.value > 0f) {
-                // 3. Exit animation: right when crossfade ends, old card fades to 0 and new card
-                // slides from right to center while scaling 0.58f -> 1f in 500ms (FastOutSlowInEasing).
+            // isCrossfading became FALSE: audio blend completed.
+            if (transitionState == CrossfadeTransitionState.ENTERING ||
+                transitionState == CrossfadeTransitionState.CROSSFADING
+            ) {
+                // 1. Move to EXITING - Retain 2-card UI completely!
+                transitionState = CrossfadeTransitionState.EXITING
                 exitAnim.snapTo(0f)
+
+                // 2. Animate exit: incoming card slides to center (offset X = 0) and expands to 1.0f in 500ms
                 exitAnim.animateTo(
                     targetValue = 1f,
                     animationSpec =
@@ -432,21 +475,34 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
                             easing = FastOutSlowInEasing,
                         ),
                 )
-                // Sync stable snapshot to the settled incoming track before resetting
+
+                // 3. ONLY after exit animation has completely settled: update stable snapshot & return to IDLE
                 if (!latestVideoId.isNullOrEmpty()) {
                     lastStableVideoId = latestVideoId
                 }
                 if (!latestThumbUrl.isNullOrBlank()) {
                     lastStableThumbUrl = latestThumbUrl
                 }
+                if (latestTitle.isNotBlank()) {
+                    lastStableTitle = latestTitle
+                }
+                if (latestArtist.isNotBlank()) {
+                    lastStableArtist = latestArtist
+                }
                 latestPaletteColor?.let {
                     lastStableColor = liftAmbientColor(it)
                 }
+
+                transitionState = CrossfadeTransitionState.IDLE
                 enterAnim.snapTo(0f)
                 exitAnim.snapTo(0f)
                 mixAnim.snapTo(0f)
                 outgoingThumbUrl = null
                 incomingThumbUrl = null
+                outgoingTitle = null
+                outgoingArtist = null
+                incomingTitle = null
+                incomingArtist = null
                 oldBitmap = null
                 newBitmap = null
             }
@@ -469,22 +525,32 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
         transitionProgress,
         enterProgress,
         exitProgress,
+        transitionState,
         isCrossfading,
         resolvedOldThumbUrl,
         resolvedNewThumbUrl,
         resolvedOldColor,
         newColor,
+        outgoingTitle,
+        outgoingArtist,
+        incomingTitle,
+        incomingArtist,
         newBitmap,
     ) {
         DualCardCrossfadeState(
             transitionProgress = transitionProgress,
             enterProgress = enterProgress,
             exitProgress = exitProgress,
+            transitionState = transitionState,
             isCrossfading = isCrossfading,
             oldThumbnailUrl = resolvedOldThumbUrl,
             newThumbnailUrl = resolvedNewThumbUrl,
             oldTrackColor = resolvedOldColor,
             newTrackColor = newColor,
+            oldTitle = outgoingTitle ?: lastStableTitle,
+            oldArtist = outgoingArtist ?: lastStableArtist,
+            newTitle = incomingTitle ?: currentTitle,
+            newArtist = incomingArtist ?: currentArtist,
             newBitmap = newBitmap,
             onOldBitmapLoaded = { oldBitmap = it },
             onNewBitmapLoaded = { newBitmap = it },
@@ -494,9 +560,6 @@ fun rememberDualCardCrossfadeState(state: NowPlayingContentState): DualCardCross
 
 /**
  * Dynamic Ambient Dark Gradient background based on the color tones of the 2 tracks.
- *
- * Outgoing track color glows on the left (26%), incoming track color glows on the right (74% -> 50%),
- * blended into deep ambient dark tones so controls and stardust particles stand out clearly.
  */
 @Composable
 fun DynamicAmbientDarkGradient(
@@ -597,17 +660,7 @@ fun DynamicAmbientDarkGradient(
 }
 
 /**
- * 3D Dual-Card Layout + White Stardust Particle Effect + Smooth Enter & Exit.
- *
- * - Enter (500ms, FastOutSlowInEasing):
- *   - Old card shrinks smoothly from 1f -> 0.58f, slides left to 26%, tilts rotationY to 15f.
- *   - New card fades in (0f -> 1f) and slides in from the right to 74% at scale = 0.58f, rotationY = -15f.
- * - Parallel Hold (1:1 for the entire crossfade duration):
- *   - Both cards stay in parallel at scale = 0.58f, rotationY = 15f / -15f, cameraDistance = 16f * density.
- *   - White Stardust particles float and drift from the left card to the right card across the gap.
- * - Exit (500ms, FastOutSlowInEasing, triggered right when crossfade ends):
- *   - Old card fades out (alpha -> 0f).
- *   - New card slides from right (74%) to center (50%), scales 0.58f -> 1.0f, and returns rotationY -> 0f.
+ * 3D Dual-Card Layout + Luminous Stardust Particle Effect + State-Machine Driven Transitions.
  */
 @Composable
 fun DualCard3DTransitionOverlay(
@@ -637,23 +690,10 @@ fun DualCard3DTransitionOverlay(
         val newPose = newCardPose(enterProgress = enter, exitProgress = exit, width = containerW)
 
         val cardVisualHeightPx = fullCardPx * HOLD_SCALE
-        val gapLeftEdgePx = (containerW * 0.34f).coerceIn(0f, containerW)
-        val gapRightEdgePx = (containerW * 0.66f).coerceIn(gapLeftEdgePx + 1f, containerW)
+        val gapLeftEdgePx = (containerW * 0.30f).coerceIn(0f, containerW)
+        val gapRightEdgePx = (containerW * 0.70f).coerceIn(gapLeftEdgePx + 1f, containerW)
 
-        // White Stardust glowing particles drifting from left card to right card during the mix
-        val stardustAlpha = (enter * (1f - exit)).coerceIn(0f, 1f)
-        if (stardustAlpha > 0.01f) {
-            WhiteStardustParticles(
-                gapStartX = gapLeftEdgePx,
-                gapEndX = gapRightEdgePx,
-                centerY = containerH * 0.5f,
-                bandHeight = cardVisualHeightPx * 0.92f,
-                alphaMultiplier = stardustAlpha,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-
-        // Outgoing (Old) Card — shrinks 1f -> 0.58f & slides to left (26%, rotationY = 15f), fades out on exit
+        // 1. Outgoing (Old) Card — shrinks 1f -> 0.58f & slides to left (26%, rotationY = 15f), fades out on exit
         if (oldPose.alpha > 0.001f) {
             val oldCornerDp = (settledCornerRadius + (CARD_CORNER_RADIUS - settledCornerRadius) * enter).coerceAtLeast(0.dp)
             val oldTopFadeDp = settledTopFade * (1f - enter)
@@ -671,7 +711,7 @@ fun DualCard3DTransitionOverlay(
             )
         }
 
-        // Incoming (New) Card — slides in from right to 74% (rotationY = -15f, scale = 0.58f), exits to 50%, 0f, 1.0f
+        // 2. Incoming (New) Card — slides in from right to 74% (rotationY = -15f, scale = 0.58f), exits to 50%, 0f, 1.0f
         if (newPose.alpha > 0.001f) {
             val newCornerDp = (CARD_CORNER_RADIUS + (settledCornerRadius - CARD_CORNER_RADIUS) * exit).coerceAtLeast(0.dp)
             val newTopFadeDp = settledTopFade * exit
@@ -686,6 +726,19 @@ fun DualCard3DTransitionOverlay(
                 topFadeDp = newTopFadeDp,
                 bottomFadeDp = newBottomFadeDp,
                 onBitmapLoaded = crossfadeState.onNewBitmapLoaded,
+            )
+        }
+
+        // 3. Stardust particles glowing with BlendMode.Screen drifting between the cards
+        val stardustAlpha = (enter * (1f - exit)).coerceIn(0f, 1f)
+        if (stardustAlpha > 0.01f) {
+            WhiteStardustParticles(
+                gapStartX = gapLeftEdgePx,
+                gapEndX = gapRightEdgePx,
+                centerY = containerH * 0.5f,
+                bandHeight = cardVisualHeightPx * 0.95f,
+                alphaMultiplier = stardustAlpha,
+                modifier = Modifier.fillMaxSize(),
             )
         }
     }
@@ -724,7 +777,7 @@ private fun TiltedAlbumCard(
                     scaleY = pose.scale
                     rotationY = pose.rotationY
                     alpha = pose.alpha
-                    cameraDistance = 16f * this.density
+                    cameraDistance = CAMERA_DISTANCE_FACTOR * this.density
                     shadowElevation = shadowPx * chromeAlpha
                     shape = cardShape
                     clip = true
@@ -779,9 +832,9 @@ private fun TiltedAlbumCard(
 }
 
 /**
- * White Stardust Particle Effect:
- * Floating, glowing white/silver dust particles in the gap between the two 3D cards,
- * drifting horizontally from the left card to the right card during the mix.
+ * White & Neon Stardust Particle Effect:
+ * Floating, glowing dust particles in the gap between the two 3D cards,
+ * rendered with [BlendMode.Screen] for intense luminous brilliance.
  */
 @Composable
 private fun WhiteStardustParticles(
@@ -794,7 +847,6 @@ private fun WhiteStardustParticles(
 ) {
     val particles = remember { generateStardustSpecs(STARDUST_COUNT) }
 
-    // Uses rememberInfiniteTransition so it automatically obeys DesktopFrameGovernor in commonMain
     val infiniteTransition = rememberInfiniteTransition(label = "whiteStardustTransition")
     val cyclePhase by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -844,23 +896,26 @@ private fun WhiteStardustParticles(
             val radiusPx = p.radiusDp.dp.toPx()
             val center = Offset(x, y)
 
-            // Soft outer silver/white glow halo
+            // Outer vibrant neon glow halo (Screen blend mode for intense luminosity)
             drawCircle(
-                color = p.tint.copy(alpha = (alpha * 0.22f).coerceIn(0f, 1f)),
-                radius = radiusPx * 3.4f,
+                color = p.tint.copy(alpha = (alpha * 0.35f).coerceIn(0f, 1f)),
+                radius = radiusPx * 3.8f,
                 center = center,
+                blendMode = BlendMode.Screen,
             )
-            // Mid glow
+            // Mid glow halo
             drawCircle(
-                color = p.tint.copy(alpha = (alpha * 0.46f).coerceIn(0f, 1f)),
-                radius = radiusPx * 1.85f,
+                color = p.tint.copy(alpha = (alpha * 0.65f).coerceIn(0f, 1f)),
+                radius = radiusPx * 2.0f,
                 center = center,
+                blendMode = BlendMode.Screen,
             )
-            // Bright white core
+            // Bright white/neon core
             drawCircle(
                 color = Color.White.copy(alpha = alpha),
                 radius = radiusPx,
                 center = center,
+                blendMode = BlendMode.Screen,
             )
         }
     }
@@ -883,12 +938,15 @@ private data class StardustSpec(
 private const val STARDUST_COUNT = 38
 private const val STARDUST_CYCLE_MS = 24000
 
+// Radiant neon palette with high-luminosity accents
 private val StardustPalette =
     listOf(
-        Color(0xFFFFFFFF), // Pure White
-        Color(0xFFF8FAFC), // Ice Silver White
-        Color(0xFFE2E8F0), // Soft Silver
-        Color(0xFFF1F5F9), // Pearl White
+        Color(0xFFFFFFFF), // Pure Bright White
+        Color(0xFF00F5FF), // Electric Neon Cyan
+        Color(0xFFFF2A85), // Neon Magenta
+        Color(0xFFBF5AF2), // Neon Purple Glow
+        Color(0xFFFFD60A), // Neon Gold Spark
+        Color(0xFF38E5FF), // Neon Ice Blue
     )
 
 private fun generateStardustSpecs(count: Int): List<StardustSpec> {
@@ -897,16 +955,14 @@ private fun generateStardustSpecs(count: Int): List<StardustSpec> {
     return List(count) { idx ->
         StardustSpec(
             initialProgress = (idx.toFloat() / count + rng.nextFloat() * 0.08f) % 1f,
-            // Concentrated slightly more around the middle of the gap with full vertical coverage
             verticalNormalized = (rng.nextFloat() * 2f - 1f) * 0.88f,
-            // Completes a left->right crossing in ~2.2s - 4.2s
             driftSpeed = 0.24f + rng.nextFloat() * 0.22f,
             swayAmplitudeDp = 3.5f + rng.nextFloat() * 8.5f,
             swaySpeed = 1.1f + rng.nextFloat() * 1.6f,
             twinkleSpeed = 0.45f + rng.nextFloat() * 0.75f,
             phaseOffset = rng.nextFloat() * twoPi,
             radiusDp = 0.85f + rng.nextFloat() * 1.45f,
-            baseAlpha = 0.55f + rng.nextFloat() * 0.42f,
+            baseAlpha = 0.60f + rng.nextFloat() * 0.40f,
             tint = StardustPalette[idx % StardustPalette.size],
         )
     }
@@ -932,7 +988,6 @@ private fun extractVibrantAmbientColor(bitmap: ImageBitmap): Color? =
             val minC = min(r, min(g, b))
             val chroma = maxC - minC
             val luma = 0.2126f * r + 0.7152f * g + 0.0722f * b
-            // Favor mid-tone chromatic pixels so dark/black borders don't wash out the ambient hue
             val weight = (0.25 + chroma * 2.2) * (if (luma in 0.08f..0.92f) 1.0 else 0.25)
             rSum += r * weight
             gSum += g * weight
