@@ -63,23 +63,20 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.random.Random
 
-// 3D Dual-Card layout & motion constants
-private const val HOLD_SCALE = 0.58f
-private const val LEFT_SLOT_FRACTION = 0.25f
-private const val RIGHT_SLOT_FRACTION = 0.75f
+// 3D Dual-Card layout & motion constants (Apple Music floating card standard: 120.dp / 0.31f * screenWidth)
+private const val HOLD_SCALE = 0.31f
+private val HOLD_CARD_SIZE_DP = 120.dp
+private const val LEFT_SLOT_FRACTION = 0.24f
+private const val RIGHT_SLOT_FRACTION = 0.76f
 private const val CENTER_SLOT_FRACTION = 0.50f
-private const val RIGHT_ENTER_START_FRACTION = 1.32f
-private const val LEFT_ROTATION_Y_DEG = 16f
-private const val RIGHT_ROTATION_Y_DEG = -16f
-private const val LEFT_ROTATION_Z_DEG = -3.8f
-private const val RIGHT_ROTATION_Z_DEG = 2.6f
-private const val LEFT_ROTATION_X_DEG = 3.5f
-private const val RIGHT_ROTATION_X_DEG = -3.5f
-private const val CAMERA_DISTANCE_FACTOR = 10f
+private const val RIGHT_ENTER_START_FRACTION = 1.24f
+private const val LEFT_ROTATION_Y_DEG = -8f
+private const val RIGHT_ROTATION_Y_DEG = 8f
+private const val CAMERA_DISTANCE_FACTOR = 20f
 private const val ENTER_DURATION_MS = 500
 private const val EXIT_DURATION_MS = 500
-private val CARD_CORNER_RADIUS = 18.dp
-private val CARD_SHADOW_ELEVATION = 16.dp
+private val CARD_CORNER_RADIUS = 14.dp
+private val CARD_SHADOW_ELEVATION = 14.dp
 
 private const val DEFAULT_CROSSFADE_DURATION_MS = 5000
 
@@ -90,9 +87,9 @@ private val AmbientBaseDarkColor = Color(0xFF101014)
 /**
  * Transition state machine for 3D Dual-Card Crossfade.
  * - IDLE: Normal playback, single card.
- * - ENTERING: 500ms enter animation (outgoing card scales down to 0.58f & slides left; incoming card slides in from right).
- * - CROSSFADING: Parallel hold of both cards side-by-side throughout the entire crossfade duration with musical breathing & 3D sway.
- * - EXITING: 500ms exit animation triggered when crossfade audio ends (old card fades out; new card slides to center offset X = 0 and scales up to 1.0f).
+ * - ENTERING: 500ms enter animation (outgoing card scales down to 120.dp / 0.31f & slides left to 24%; incoming card slides in from right to 76%).
+ * - CROSSFADING: Parallel hold of both floating 120.dp cards side-by-side throughout the crossfade duration with gentle breathing sway.
+ * - EXITING: 500ms exit animation triggered when crossfade audio ends (old card fades out; new card slides to center offset X = 0 and scales from 120.dp / 0.31f up to 1.0f).
  */
 enum class CrossfadeTransitionState {
     IDLE,
@@ -109,17 +106,16 @@ data class DualCardPose(
     val centerX: Float,
     val offsetY: Float = 0f,
     val scale: Float,
-    val rotationX: Float = 0f,
     val rotationY: Float,
-    val rotationZ: Float = 0f,
     val alpha: Float,
 )
 
 /**
  * Computes the 3D pose of the outgoing (left) card from [enterProgress] and [exitProgress]:
- * - Enter (500ms, FastOutSlowInEasing): shrinks smoothly from 1f -> 0.58f, slides left from center (50%) -> 25%,
- *   and tilts rotationY from 0f -> 16f, rotationZ -> -3.8f.
- * - Hold (parallel across the entire crossfade duration): stays at 25%, scale = 0.58f, with continuous 3D breathing & musical sway.
+ * - Enter (500ms, FastOutSlowInEasing): shrinks smoothly from 1f -> [holdScale] (120.dp / 0.31f),
+ *   slides left from center (50%) -> 24%, and tilts rotationY gently from 0f -> -8f.
+ * - Hold (parallel across the entire crossfade duration): floats at 24% width, 120.dp size,
+ *   rotationY = -8f, with subtle, graceful breathing motion (no Z-axis rotation or cube flip).
  * - Exit (500ms, FastOutSlowInEasing): drifts slightly left while fading out (alpha 1f -> 0f).
  */
 fun oldCardPose(
@@ -127,6 +123,8 @@ fun oldCardPose(
     exitProgress: Float,
     width: Float,
     swayPhaseRad: Float = 0f,
+    holdScale: Float = HOLD_SCALE,
+    holdOffsetY: Float = 0f,
 ): DualCardPose {
     val enter = enterProgress.coerceIn(0f, 1f)
     val exit = exitProgress.coerceIn(0f, 1f)
@@ -134,23 +132,19 @@ fun oldCardPose(
 
     val centerX = width * CENTER_SLOT_FRACTION
     val leftX = width * LEFT_SLOT_FRACTION
-    val exitShiftX = -width * 0.08f * exit
+    val exitShiftX = -width * 0.05f * exit
 
-    // Continuous musical breathing & 3D floating motion while crossfading
-    val breatheScale = sin(swayPhaseRad) * 0.022f * holdWeight
-    val swayX = sin(swayPhaseRad * 0.7f) * (width * 0.012f) * holdWeight
-    val swayY = cos(swayPhaseRad * 1.1f) * (width * 0.016f) * holdWeight
-    val swayRotY = sin(swayPhaseRad * 0.9f) * 3.2f * holdWeight
-    val swayRotZ = cos(swayPhaseRad * 0.8f) * 1.6f * holdWeight
-    val swayRotX = sin(swayPhaseRad * 1.2f) * 2.4f * holdWeight
+    // Subtle, graceful floating breathing sway during CROSSFADING
+    val breatheScale = sin(swayPhaseRad) * 0.008f * holdWeight
+    val swayX = sin(swayPhaseRad * 0.7f) * (width * 0.005f) * holdWeight
+    val swayY = cos(swayPhaseRad) * (width * 0.007f) * holdWeight
+    val swayRotY = sin(swayPhaseRad * 0.8f) * 1.0f * holdWeight
 
     return DualCardPose(
         centerX = centerX + (leftX - centerX) * enter + exitShiftX + swayX,
-        offsetY = swayY,
-        scale = (1f + (HOLD_SCALE - 1f) * enter - 0.06f * exit + breatheScale).coerceAtLeast(0.1f),
-        rotationX = LEFT_ROTATION_X_DEG * holdWeight + swayRotX,
+        offsetY = holdOffsetY * enter + swayY,
+        scale = (1f + (holdScale - 1f) * enter - 0.03f * exit + breatheScale).coerceAtLeast(0.1f),
         rotationY = LEFT_ROTATION_Y_DEG * enter + swayRotY,
-        rotationZ = LEFT_ROTATION_Z_DEG * enter + swayRotZ,
         alpha = (1f - exit).coerceIn(0f, 1f),
     )
 }
@@ -179,17 +173,20 @@ fun oldCardPose(
 
 /**
  * Computes the 3D pose of the incoming (right) card from [enterProgress] and [exitProgress]:
- * - Enter (500ms, FastOutSlowInEasing): fades in (alpha 0f -> 1f) and slides smoothly in from the right edge (132%) -> 75%,
- *   at scale = 0.58f, rotationY = -16f, rotationZ = 2.6f.
- * - Hold (parallel across the entire crossfade duration): stays at 75%, scale = 0.58f, with continuous 3D breathing & musical sway.
- * - Exit (500ms, FastOutSlowInEasing): slides smoothly from right (75%) -> center (50%, offset X = 0),
- *   scales 0.58f -> 1.0f, and returns rotationX/Y/Z -> 0f.
+ * - Enter (500ms, FastOutSlowInEasing): fades in (alpha 0f -> 1f) and slides smoothly in from the right edge -> 76%,
+ *   at size 120.dp ([holdScale] = 0.31f) and gentle tilt rotationY = +8f.
+ * - Hold (parallel across the entire crossfade duration): floats at 76% width, 120.dp size,
+ *   rotationY = +8f, with subtle counter-phase breathing motion (no Z-axis rotation or cube flip).
+ * - Exit (500ms, FastOutSlowInEasing): slides smoothly from right (76%) -> center (50%, offset X = 0),
+ *   scales from 120.dp ([holdScale]) -> full player size (1.0f), and returns rotationY from +8f -> 0f.
  */
 fun newCardPose(
     enterProgress: Float,
     exitProgress: Float,
     width: Float,
     swayPhaseRad: Float = 0f,
+    holdScale: Float = HOLD_SCALE,
+    holdOffsetY: Float = 0f,
 ): DualCardPose {
     val enter = enterProgress.coerceIn(0f, 1f)
     val exit = exitProgress.coerceIn(0f, 1f)
@@ -200,23 +197,19 @@ fun newCardPose(
     val centerX = width * CENTER_SLOT_FRACTION
     val heldX = enterStartX + (rightX - enterStartX) * enter
 
-    // Counter-phase musical breathing & 3D floating motion while crossfading
-    val counterPhase = swayPhaseRad + (PI * 0.85).toFloat()
-    val breatheScale = sin(counterPhase) * 0.022f * holdWeight
-    val swayX = sin(counterPhase * 0.7f) * (width * 0.012f) * holdWeight
-    val swayY = cos(counterPhase * 1.1f) * (width * 0.016f) * holdWeight
-    val swayRotY = sin(counterPhase * 0.9f) * 3.2f * holdWeight
-    val swayRotZ = cos(counterPhase * 0.8f) * 1.6f * holdWeight
-    val swayRotX = sin(counterPhase * 1.2f) * 2.4f * holdWeight
+    // Subtle counter-phase floating breathing sway during CROSSFADING
+    val counterPhase = swayPhaseRad + PI.toFloat()
+    val breatheScale = sin(counterPhase) * 0.008f * holdWeight
+    val swayX = sin(counterPhase * 0.7f) * (width * 0.005f) * holdWeight
+    val swayY = cos(counterPhase) * (width * 0.007f) * holdWeight
+    val swayRotY = sin(counterPhase * 0.8f) * 1.0f * holdWeight
 
-    val baseScale = HOLD_SCALE + (1f - HOLD_SCALE) * exit
+    val baseScale = holdScale + (1f - holdScale) * exit
     return DualCardPose(
         centerX = heldX + (centerX - heldX) * exit + swayX,
-        offsetY = swayY,
-        scale = (baseScale + breatheScale).coerceIn(0.1f, 1.05f),
-        rotationX = RIGHT_ROTATION_X_DEG * holdWeight + swayRotX,
+        offsetY = holdOffsetY * holdWeight + swayY,
+        scale = (baseScale + breatheScale).coerceIn(0.1f, 1.02f),
         rotationY = RIGHT_ROTATION_Y_DEG * (1f - exit) * enter + swayRotY,
-        rotationZ = RIGHT_ROTATION_Z_DEG * (1f - exit) * enter + swayRotZ,
         alpha = (enter * (1f - exit) + exit).coerceIn(0f, 1f),
     )
 }
@@ -782,14 +775,14 @@ fun DualCard3DTransitionOverlay(
 
     val density = LocalDensity.current
 
-    // Continuous musical rhythm / breathing phase during crossfade
+    // Gentle floating breathing phase during crossfade
     val infiniteTransition = rememberInfiniteTransition(label = "dualCardMusicalSway")
     val swayCycle by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = (2.0 * PI).toFloat(),
         animationSpec =
             infiniteRepeatable(
-                animation = tween(durationMillis = 2800, easing = LinearEasing),
+                animation = tween(durationMillis = 3600, easing = LinearEasing),
                 repeatMode = RepeatMode.Restart,
             ),
         label = "dualCardSwayPhase",
@@ -803,6 +796,17 @@ fun DualCard3DTransitionOverlay(
         val containerH = constraints.maxHeight.toFloat().coerceAtLeast(1f)
         val fullCardPx = min(containerW, containerH).coerceAtLeast(1f)
         val fullCardDp = with(density) { fullCardPx.toDp() }
+
+        // Lock hold card size to 120.dp / 0.31f * screenWidth (30% - 32% of screen width)
+        val targetHoldCardPx =
+            min(
+                with(density) { HOLD_CARD_SIZE_DP.toPx() },
+                containerW * HOLD_SCALE,
+            ).coerceAtLeast(1f)
+        val effectiveHoldScale = (targetHoldCardPx / fullCardPx).coerceIn(0.25f, 0.34f)
+
+        // Position cards at ~35% of player height during crossfade, returning smoothly to 0f on exit
+        val holdOffsetY = -containerH * 0.04f
 
         val enter =
             when (crossfadeState.transitionState) {
@@ -824,6 +828,8 @@ fun DualCard3DTransitionOverlay(
                 exitProgress = exit,
                 width = containerW,
                 swayPhaseRad = swayCycle,
+                holdScale = effectiveHoldScale,
+                holdOffsetY = holdOffsetY,
             )
         val newPose =
             newCardPose(
@@ -831,16 +837,19 @@ fun DualCard3DTransitionOverlay(
                 exitProgress = exit,
                 width = containerW,
                 swayPhaseRad = swayCycle,
+                holdScale = effectiveHoldScale,
+                holdOffsetY = holdOffsetY,
             )
 
-        val cardVisualHeightPx = fullCardPx * HOLD_SCALE
-        // Calculate the live gap between the right edge of the outgoing card and the left edge of the incoming card
-        val oldCardRightEdgePx = oldPose.centerX + (fullCardPx * oldPose.scale) * 0.36f
-        val newCardLeftEdgePx = newPose.centerX - (fullCardPx * newPose.scale) * 0.36f
-        val gapLeftEdgePx = min(oldCardRightEdgePx, containerW * 0.36f).coerceIn(0f, containerW)
-        val gapRightEdgePx = max(newCardLeftEdgePx, containerW * 0.64f).coerceIn(gapLeftEdgePx + 1f, containerW)
+        val cardVisualHeightPx = fullCardPx * effectiveHoldScale
+        // With 120.dp cards centered at 24% and 76%, the open gap between them spans ~39.5% to ~60.5% (~120dp wide)
+        val oldCardRightEdgePx = oldPose.centerX + (fullCardPx * oldPose.scale) * 0.48f
+        val newCardLeftEdgePx = newPose.centerX - (fullCardPx * newPose.scale) * 0.48f
+        val gapLeftEdgePx = min(oldCardRightEdgePx, containerW * 0.38f).coerceIn(0f, containerW)
+        val gapRightEdgePx = max(newCardLeftEdgePx, containerW * 0.62f).coerceIn(gapLeftEdgePx + 1f, containerW)
+        val stardustCenterY = containerH * 0.5f + holdOffsetY * enter * (1f - exit)
 
-        // 1. Outgoing (Old) Card — shrinks 1f -> 0.58f & slides to left (25%, rotationY = 16f, rotationZ = -3.8f), fades out on exit
+        // 1. Outgoing (Old) Card — shrinks 1f -> 120.dp (0.31f) & slides to left (24%, rotationY = -8f), fades out on exit
         if (oldPose.alpha > 0.001f) {
             val oldCornerDp = (settledCornerRadius + (CARD_CORNER_RADIUS - settledCornerRadius) * enter).coerceAtLeast(0.dp)
             val oldTopFadeDp = settledTopFade * (1f - enter)
@@ -858,14 +867,14 @@ fun DualCard3DTransitionOverlay(
             )
         }
 
-        // 2. Stardust particles glowing with BlendMode.Screen floating in the gap between the cards
+        // 2. Stardust particles glowing with BlendMode.Screen floating in the ~120dp gap between the cards
         val stardustAlpha = (enter * (1f - exit * 1.15f)).coerceIn(0f, 1f)
         if (stardustAlpha > 0.01f) {
             WhiteStardustParticles(
                 gapStartX = gapLeftEdgePx,
                 gapEndX = gapRightEdgePx,
-                centerY = containerH * 0.5f,
-                bandHeight = cardVisualHeightPx * 0.96f,
+                centerY = stardustCenterY,
+                bandHeight = cardVisualHeightPx * 1.08f,
                 alphaMultiplier = stardustAlpha,
                 oldTrackColor = crossfadeState.oldTrackColor,
                 newTrackColor = crossfadeState.newTrackColor,
@@ -873,7 +882,7 @@ fun DualCard3DTransitionOverlay(
             )
         }
 
-        // 3. Incoming (New) Card — slides in smoothly from right edge (132%) to 75%, exits to 50% (offset X = 0), scale 0.58f -> 1.0f
+        // 3. Incoming (New) Card — slides in from right to 76% (120.dp, rotationY = +8f), exits to 50% (offset X = 0), scale -> 1.0f
         if (newPose.alpha > 0.001f) {
             val newCornerDp = (CARD_CORNER_RADIUS + (settledCornerRadius - CARD_CORNER_RADIUS) * exit).coerceAtLeast(0.dp)
             val newTopFadeDp = settledTopFade * exit
@@ -926,9 +935,7 @@ private fun TiltedAlbumCard(
                     translationY = pose.offsetY
                     scaleX = pose.scale
                     scaleY = pose.scale
-                    rotationX = pose.rotationX
                     rotationY = pose.rotationY
-                    rotationZ = pose.rotationZ
                     alpha = pose.alpha
                     cameraDistance = CAMERA_DISTANCE_FACTOR * this.density
                     shadowElevation = shadowPx * chromeAlpha
@@ -938,12 +945,12 @@ private fun TiltedAlbumCard(
                     spotShadowColor = Color.Black
                 }.background(Color(0xFF1A1A20).copy(alpha = chromeAlpha), cardShape)
                 .border(
-                    width = (1.2f / currentScale).dp,
+                    width = (1.0f / currentScale).dp,
                     brush =
                         Brush.linearGradient(
-                            0f to Color.White.copy(alpha = 0.28f * chromeAlpha),
+                            0f to Color.White.copy(alpha = 0.24f * chromeAlpha),
                             0.5f to Color.White.copy(alpha = 0.08f * chromeAlpha),
-                            1f to Color.White.copy(alpha = 0.20f * chromeAlpha),
+                            1f to Color.White.copy(alpha = 0.16f * chromeAlpha),
                         ),
                     shape = cardShape,
                 ).clip(cardShape),
