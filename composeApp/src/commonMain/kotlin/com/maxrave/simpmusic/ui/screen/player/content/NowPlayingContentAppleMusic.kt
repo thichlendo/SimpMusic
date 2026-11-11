@@ -55,13 +55,16 @@ import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -490,6 +493,9 @@ private fun AppleMusicMainView(
         // is glass.
         val topBand = if (topInset > 0.dp) statusBarHeight + TOP_BAND_STRIP else 0.dp
 
+        // 1. Single-Card Pager (IDLE)
+        // Always remains in the composition tree; hidden via alpha when crossfadeState.isActive is true
+        // so that ENTERING -> CROSSFADING -> EXITING -> IDLE transitions never snap or flash.
         LeftToRight {
             HorizontalPager(
                 state = state.artworkPagerState,
@@ -528,20 +534,21 @@ private fun AppleMusicMainView(
             }
         }
 
-        if (crossfadeState.isActive) {
-            DualCard3DTransitionOverlay(
-                crossfadeState = crossfadeState,
-                settledCornerRadius = 0.dp,
-                settledTopFade = topFade,
-                settledBottomFade = artworkFade,
-                modifier =
-                    Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = topInset)
-                        .fillMaxWidth()
-                        .height(artworkHeight),
-            )
-        }
+        // 2. Dual-Card 3D Transition Overlay (ENTERING -> CROSSFADING -> EXITING)
+        // Strictly controlled by CrossfadeTransitionState; NEVER disposed when isCrossfading turns false
+        // until the 500ms EXITING animation completes and returns state to IDLE.
+        DualCard3DTransitionOverlay(
+            crossfadeState = crossfadeState,
+            settledCornerRadius = 0.dp,
+            settledTopFade = topFade,
+            settledBottomFade = artworkFade,
+            modifier =
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = topInset)
+                    .fillMaxWidth()
+                    .height(artworkHeight),
+        )
 
         // Android plays the animated artwork on a SurfaceView, which no Compose mask or alpha reaches:
         // masked like the cover, the clip still ended in a hard edge across the page. So the page is
@@ -926,12 +933,6 @@ internal fun BoxScope.AppleMusicArtworkBackdrop(
     Box(modifier = Modifier.fillMaxSize().alpha(BACKDROP_TINT_ALPHA).background(backdropBrush))
 }
 
-private data class AppleMusicDisplayTrackInfo(
-    val title: String,
-    val artist: String,
-    val isExplicit: Boolean,
-)
-
 @Composable
 internal fun AppleMusicMainTitleRow(
     state: NowPlayingContentState,
@@ -939,76 +940,145 @@ internal fun AppleMusicMainTitleRow(
     typography: AppleMusicTypography,
     crossfadeState: DualCardCrossfadeState? = null,
 ) {
-    val isIncoming =
-        crossfadeState?.let {
-            it.transitionState == CrossfadeTransitionState.EXITING ||
-                it.transitionProgress >= 0.5f
-        } ?: true
+    val isCrossfadeActive = crossfadeState?.isActive == true
+    val oldTitle = crossfadeState?.oldTitle?.takeIf { it.isNotBlank() } ?: state.screenData.nowPlayingTitle
+    val oldArtist = crossfadeState?.oldArtist?.takeIf { it.isNotBlank() } ?: state.screenData.artistName
+    val oldExplicit = crossfadeState?.oldIsExplicit ?: false
 
-    val currentDisplayInfo =
-        if (crossfadeState != null && crossfadeState.isActive) {
-            if (isIncoming) {
-                AppleMusicDisplayTrackInfo(
-                    title = crossfadeState.newTitle?.takeIf { it.isNotBlank() } ?: state.screenData.nowPlayingTitle,
-                    artist = crossfadeState.newArtist?.takeIf { it.isNotBlank() } ?: state.screenData.artistName,
-                    isExplicit = state.screenData.isExplicit,
-                )
-            } else {
-                AppleMusicDisplayTrackInfo(
-                    title = crossfadeState.oldTitle?.takeIf { it.isNotBlank() } ?: state.screenData.nowPlayingTitle,
-                    artist = crossfadeState.oldArtist?.takeIf { it.isNotBlank() } ?: state.screenData.artistName,
-                    isExplicit = false,
-                )
-            }
-        } else {
-            AppleMusicDisplayTrackInfo(
-                title = state.screenData.nowPlayingTitle,
-                artist = state.screenData.artistName,
-                isExplicit = state.screenData.isExplicit,
-            )
-        }
+    val newTitle = crossfadeState?.newTitle?.takeIf { it.isNotBlank() } ?: state.screenData.nowPlayingTitle
+    val newArtist = crossfadeState?.newArtist?.takeIf { it.isNotBlank() } ?: state.screenData.artistName
+    val newExplicit = crossfadeState?.newIsExplicit ?: state.screenData.isExplicit
+
+    // Separate alpha progression for old card info vs new card info so they never collide or clip
+    val showIncomingInfo =
+        !isCrossfadeActive ||
+            crossfadeState.transitionState == CrossfadeTransitionState.EXITING ||
+            crossfadeState.transitionState == CrossfadeTransitionState.CROSSFADING ||
+            crossfadeState.enterProgress >= 0.45f
+
+    val oldInfoAlpha by animateFloatAsState(
+        targetValue = if (isCrossfadeActive && !showIncomingInfo) 1f else 0f,
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+        label = "appleMusicOldTrackInfoAlpha",
+    )
+    val newInfoAlpha by animateFloatAsState(
+        targetValue = if (!isCrossfadeActive || showIncomingInfo) 1f else 0f,
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+        label = "appleMusicNewTrackInfoAlpha",
+    )
 
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Crossfade(
-            targetState = currentDisplayInfo,
-            animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
-            modifier = Modifier.weight(1f),
-            label = "appleMusicTitleCrossfade",
-        ) { trackInfo ->
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = trackInfo.title,
-                    style = typography.mainTitle,
-                    maxLines = 1,
+        Box(
+            modifier =
+                Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp)
+                    .clipToBounds(),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            // 1. Dedicated Outgoing (Old Card) Track Info Layout
+            if (isCrossfadeActive && oldInfoAlpha > 0.001f) {
+                AppleMusicTrackMetadataColumn(
+                    title = oldTitle,
+                    artist = oldArtist,
+                    isExplicit = oldExplicit,
+                    typography = typography,
+                    onNavigateToArtist = actions.onNavigateToArtist,
                     modifier =
                         Modifier
                             .fillMaxWidth()
-                            .basicMarquee(iterations = Int.MAX_VALUE, animationMode = MarqueeAnimationMode.Immediately)
-                            .focusable(),
+                            .graphicsLayer {
+                                alpha = oldInfoAlpha
+                                translationX = -16.dp.toPx() * (1f - oldInfoAlpha)
+                            },
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (trackInfo.isExplicit) {
-                        ExplicitBadge(modifier = Modifier.size(20.dp).padding(end = 4.dp))
-                    }
-                    Text(
-                        text = trackInfo.artist,
-                        style = typography.mainArtist,
-                        maxLines = 1,
-                        modifier =
-                            Modifier
-                                .basicMarquee(iterations = Int.MAX_VALUE, animationMode = MarqueeAnimationMode.Immediately)
-                                .focusable()
-                                .clickable { actions.onNavigateToArtist() },
-                    )
-                }
+            }
+
+            // 2. Dedicated Incoming (New Card) / Current Track Info Layout
+            if (newInfoAlpha > 0.001f) {
+                AppleMusicTrackMetadataColumn(
+                    title = if (isCrossfadeActive) newTitle else state.screenData.nowPlayingTitle,
+                    artist = if (isCrossfadeActive) newArtist else state.screenData.artistName,
+                    isExplicit = if (isCrossfadeActive) newExplicit else state.screenData.isExplicit,
+                    typography = typography,
+                    onNavigateToArtist = actions.onNavigateToArtist,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .graphicsLayer {
+                                alpha = newInfoAlpha
+                                translationX = if (isCrossfadeActive) 16.dp.toPx() * (1f - newInfoAlpha) else 0f
+                            },
+                )
             }
         }
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(8.dp))
         AppleMusicHeaderActions(state = state, actions = actions)
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AppleMusicTrackMetadataColumn(
+    title: String,
+    artist: String,
+    isExplicit: Boolean,
+    typography: AppleMusicTypography,
+    onNavigateToArtist: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .clipToBounds(),
+    ) {
+        Text(
+            text = title,
+            style = typography.mainTitle,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clipToBounds()
+                    .basicMarquee(
+                        iterations = Int.MAX_VALUE,
+                        animationMode = MarqueeAnimationMode.Immediately,
+                    ).focusable(),
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clipToBounds(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isExplicit) {
+                ExplicitBadge(modifier = Modifier.size(20.dp).padding(end = 4.dp))
+            }
+            Text(
+                text = artist,
+                style = typography.mainArtist,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .clipToBounds()
+                        .basicMarquee(
+                            iterations = Int.MAX_VALUE,
+                            animationMode = MarqueeAnimationMode.Immediately,
+                        ).focusable()
+                        .clickable { onNavigateToArtist() },
+            )
+        }
     }
 }
 
