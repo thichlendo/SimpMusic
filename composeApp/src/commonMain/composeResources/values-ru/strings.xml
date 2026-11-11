@@ -923,8 +923,6 @@
     <string name="login_sync_unreachable">Не удалось достичь компьютер. Убедитесь, что ваш телефон в одной сети или tailnet, и повторите попытку.</string>
     <string name="login_sync_code_expired">Срок действия кода на вашем компьютере истек. Покажите новый и просканируйте снова.</string>
     <string name="login_sync_failed">Произошла ошибка. Повторите попытку.</string>
-    <string name="modified_build_title">Неофициальное приложение</string>
-    <string name="modified_build_message">Вы используете неофициальную версию SimpMusic, которая была модифицирована или пересобрана посторонними людьми. Оно не может быть использовано. Загрузите официальную версию с simpmusic.org.</string>
     <string name="taste_title">Какой Ваш музыкальный вкус?</string>
     <string name="taste_invite">Позвольте ИИ посмотреть Вашу историю прослушивания за 12 месяцев и рассказать Вам.</string>
     <string name="taste_loading_title">Читаем историю прослушивания...</string>

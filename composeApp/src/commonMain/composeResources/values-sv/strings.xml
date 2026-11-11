@@ -916,8 +916,6 @@
     <string name="login_sync_unreachable">Det gick inte att nå datorn. Kontrollera att telefonen är ansluten till samma nätverk eller tailnet och försök igen.</string>
     <string name="login_sync_code_expired">Koden på datorn har gått ut. Visa en ny kod och skanna igen.</string>
     <string name="login_sync_failed">Något gick fel. Försök igen.</string>
-    <string name="modified_build_title">Inofficiell app</string>
-    <string name="modified_build_message">Du använder en inofficiell kopia av SimpMusic som har ändrats eller paketerats om av någon annan. Den kan inte användas. Hämta den officiella versionen från simpmusic.org.</string>
     <string name="taste_title">Vilken musiksmak har du?</string>
     <string name="taste_invite">Låt AI analysera vad du har lyssnat på de senaste 12 månaderna och ge dig svaret.</string>
     <string name="taste_loading_title">Analyserar din musiksmak…</string>

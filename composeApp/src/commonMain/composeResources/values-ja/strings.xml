@@ -913,8 +913,6 @@
     <string name="login_sync_unreachable">コンピュータに接続できませんでした。携帯電話が同じネットワークまたはテールネットに接続されていることを確認してから、もう一度やり直してください。</string>
     <string name="login_sync_code_expired">お使いのコンピューターのコードの有効期限が切れています。新しいコードを表示して再度スキャンしてください。</string>
     <string name="login_sync_failed">問題が発生しました。もう一度やり直してください。</string>
-    <string name="modified_build_title">非公式アプリ</string>
-    <string name="modified_build_message">あなたは、他の誰かによって修正または再パッケージ化されたSimpMusicの非公式コピーを使用しています。 使用できません。simpmusic.org から公式バージョンをダウンロードしてください。</string>
     <string name="taste_title">あなたの音楽の好みは？</string>
     <string name="taste_invite">AIに過去12か月間のあなたの聴き方を分析してもらいましょう。</string>
     <string name="taste_loading_title">あなたの音楽の好みを分析中…</string>

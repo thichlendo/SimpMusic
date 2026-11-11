@@ -3,8 +3,7 @@ import java.util.Properties
 // SimpMusic for vivo: androidApp's sources, shipped under a package vivo's Origin Island follows.
 // vivo's island and music widget only follow apps on vivo's own list of package names, and a normal
 // app cannot add itself to that list. This module builds androidApp unchanged under one of the listed
-// names. That name must stay in Config.OFFICIAL_PACKAGE_NAMES, and the APK must be signed with our key,
-// or the unofficial-build check blocks it. Built with: ./build_and_sign_apk.sh --release --full --vivo
+// names. Built with: ./build_and_sign_apk.sh --release --full --vivo
 // Everything except the package and the ABI mirrors androidApp/build.gradle.kts: keep the two in step.
 
 val isFullBuild: Boolean =

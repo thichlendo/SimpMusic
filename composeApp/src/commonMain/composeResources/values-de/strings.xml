@@ -916,8 +916,6 @@ In SimpMusic können nur Playlist-Dateien in unserem eigenen Format importiert w
     <string name="login_sync_unreachable">Der Computer konnte nicht erreicht werden. Stelle sicher, dass sich dein Smartphone im selben Netzwerk oder Tailnet befindet, und versuche es dann erneut.</string>
     <string name="login_sync_code_expired">Der Code auf Ihrem Computer ist abgelaufen. Zeige einen neuen und scanne erneut.</string>
     <string name="login_sync_failed">Etwas ist schiefgelaufen. Bitte versuche es erneut.</string>
-    <string name="modified_build_title">Inoffizielle App</string>
-    <string name="modified_build_message">Du verwendest eine inoffizielle Kopie von SimpMusic die von jemand anderem modifiziert oder neu verpackt wurde. Es kann nicht benutzt werden. Laden Sie die offizielle Version von simpmusic.org herunter.</string>
     <string name="taste_title">Was ist dein Musikgeschmack?</string>
     <string name="taste_invite">Lass die KI deine Hörgewohnheiten der letzten 12 Monate analysieren und dir das Ergebnis mitteilen.</string>
     <string name="taste_loading_title">Deinen Musikgeschmack analysieren…</string>

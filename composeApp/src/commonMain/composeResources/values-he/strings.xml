@@ -921,8 +921,6 @@ SimpMusic תמיד בחינם וללא פרסומות \n\nנבנה ב-❤️ מ�
     <string name="login_sync_unreachable">לא ניתן היה להתחבר למחשב. ודא שהטלפון שלך מחובר לאותה רשת או רשת אחורית, ולאחר מכן נסה שוב.</string>
     <string name="login_sync_code_expired">הקוד במחשב שלך פג. הצג אחד חדש וסרוק אותו שוב.</string>
     <string name="login_sync_failed">משהו השתבש. אנא נסה שוב.</string>
-    <string name="modified_build_title">אפליקציה לא רשמית</string>
-    <string name="modified_build_message">אתה משתמש בעותק לא רשמי של SimpMusic ששונה או נארז מחדש על ידי מישהו אחר. לא ניתן להשתמש בו. הורד את הגרסה הרשמית מהאתר simpmusic.org.</string>
     <string name="taste_title">מהו טעם המוזיקה שלך?</string>
     <string name="taste_invite">תן לבינה מלאכותית לקרוא את 12 החודשים האחרונים של ההאזנות שלך ולספר לך.</string>
     <string name="taste_loading_title">קורא את טעם המוזיקה שלך…</string>

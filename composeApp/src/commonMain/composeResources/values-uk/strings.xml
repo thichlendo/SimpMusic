@@ -900,8 +900,6 @@
     <string name="login_sync_unreachable">Не вдалося зв'язатися з комп'ютером. Переконайтеся, що телефон знаходиться в тій ж мережі, потім спробуйте ще раз.</string>
     <string name="login_sync_code_expired">Код на вашому комп'ютері закінчився. Показати новий код і сканувати знову.</string>
     <string name="login_sync_failed">Щось пішло не так. Спробуйте ще раз.</string>
-    <string name="modified_build_title">Неофіційний додаток</string>
-    <string name="modified_build_message">Ви використовуєте неофіційну копію SimpMusic яка була модифікована або перепакована кимось іншим. Неможливо використовувати. Завантажте офіційну версію з simpmusic.org.</string>
     <string name="taste_title">Які у Вас музичні вподобання?</string>
     <string name="taste_invite">Нехай ШІ проаналізує ваші музичні вподобання за останні 12 місяців і скаже вам.</string>
     <string name="taste_loading_title">Читання Ваших музичних смаків…</string>

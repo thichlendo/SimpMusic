@@ -913,8 +913,6 @@
     <string name="login_sync_unreachable">Không kết nối được với máy tính. Hãy đảm bảo điện thoại của bạn dùng cùng mạng hoặc cùng tailnet, rồi thử lại.</string>
     <string name="login_sync_code_expired">Mã trên máy tính của bạn đã hết hạn. Hãy tạo mã mới rồi quét lại.</string>
     <string name="login_sync_failed">Đã xảy ra lỗi. Vui lòng thử lại.</string>
-    <string name="modified_build_title">Ứng dụng không chính thức</string>
-    <string name="modified_build_message">Bạn đang dùng một bản SimpMusic không chính thức do người khác chỉnh sửa hoặc đóng gói lại. Bản này không thể sử dụng. Hãy tải bản chính thức tại simpmusic.org.</string>
     <string name="taste_title">Gu nhạc của bạn là gì?</string>
     <string name="taste_invite">Để AI đọc 12 tháng nghe nhạc gần nhất của bạn và nói cho bạn biết.</string>
     <string name="taste_loading_title">Đang đọc gu nhạc của bạn…</string>

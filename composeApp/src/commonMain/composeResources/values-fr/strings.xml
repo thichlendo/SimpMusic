@@ -916,8 +916,6 @@
     <string name="login_sync_unreachable">Impossible d'accéder à l'ordinateur. Assurez-vous que votre téléphone est connecté au même réseau ou au même sous-réseau, puis réessayez.</string>
     <string name="login_sync_code_expired">Le code affiché sur votre ordinateur a expiré. Affichez-en un nouveau et relancez la numérisation.</string>
     <string name="login_sync_failed">Une erreur s'est produite. Veuillez réessayer.</string>
-    <string name="modified_build_title">Application non officielle</string>
-    <string name="modified_build_message">Vous utilisez une copie non officielle de SimpMusic qui a été modifiée ou reconditionnée par un tiers. Elle ne peut pas être utilisée. Téléchargez la version officielle sur simpmusic.org.</string>
     <string name="taste_title">Quels sont vos goûts musicaux ?</string>
     <string name="taste_invite">Laissez l'IA analyser vos habitudes d'écoute des 12 derniers mois et vous le dire.</string>
     <string name="taste_loading_title">À la découverte de vos goûts musicaux…</string>
