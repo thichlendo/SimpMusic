@@ -2733,7 +2733,8 @@ fun SettingScreen(
                 SettingItem(
                     title = stringResource(Res.string.auto_check_for_update),
                     subtitle = stringResource(Res.string.auto_check_for_update_description),
-                    switch = (autoCheckUpdate to { viewModel.setAutoCheckUpdate(it) }),
+                    isEnable = false,
+                    switch = (false to {}),
                 )
                 SettingItem(
                     title = stringResource(Res.string.update_channel),

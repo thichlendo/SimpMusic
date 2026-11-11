@@ -193,9 +193,6 @@ class SharedViewModel(
     private val _showNotificationPermissionDialog = MutableStateFlow(false)
     val showNotificationPermissionDialog: StateFlow<Boolean> = _showNotificationPermissionDialog
 
-    private val _isOfficialBuild = MutableStateFlow(true)
-    val isOfficialBuild: StateFlow<Boolean> = _isOfficialBuild
-
     // One-shot: the Desktop capsule asks the Now Playing panel, which hosts the page, to open
     // full-screen lyrics. The panel consumes it once shown.
     private val _fullscreenLyricsRequest = MutableStateFlow(false)
@@ -1247,16 +1244,6 @@ class SharedViewModel(
 
     fun checkForUpdate() {
         _isCheckingUpdate.value = false
-    }
-
-    /**
-     * Anti-tamper check disabled: always keeps _isOfficialBuild as true.
-     */
-    fun checkOfficialBuild(
-        packageName: String,
-        signingCerts: List<String>,
-    ) {
-        _isOfficialBuild.value = true
     }
 
     fun stopPlayer() {
