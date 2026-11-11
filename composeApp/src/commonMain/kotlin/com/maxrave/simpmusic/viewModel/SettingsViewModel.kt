@@ -882,16 +882,16 @@ class SettingsViewModel(
 
     private fun getAutoCheckUpdate() {
         viewModelScope.launch {
-            dataStoreManager.autoCheckForUpdates.collect { autoCheckUpdate ->
-                _autoCheckUpdate.value = autoCheckUpdate == DataStoreManager.TRUE
+            dataStoreManager.autoCheckForUpdates.collect { _ ->
+                _autoCheckUpdate.value = false
             }
         }
     }
 
     fun setAutoCheckUpdate(autoCheckUpdate: Boolean) {
         viewModelScope.launch {
-            dataStoreManager.setAutoCheckForUpdates(autoCheckUpdate)
-            getAutoCheckUpdate()
+            dataStoreManager.setAutoCheckForUpdates(false)
+            _autoCheckUpdate.value = false
         }
     }
 

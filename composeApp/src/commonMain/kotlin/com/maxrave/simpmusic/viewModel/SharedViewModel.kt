@@ -1246,74 +1246,17 @@ class SharedViewModel(
     val updateResponse: StateFlow<UpdateData?> = _updateResponse
 
     fun checkForUpdate() {
-        // Raised before the coroutine starts, so Home's launch banner, which reads it right after
-        // startup, can never miss a check that is already under way but not yet marked.
-        _isCheckingUpdate.value = true
-        viewModelScope.launch {
-            val updateChannel = dataStoreManager.updateChannel.first()
-            dataStoreManager.putString(
-                "CheckForUpdateAt",
-                System.currentTimeMillis().toString(),
-            )
-            if (updateChannel == DataStoreManager.GITHUB) {
-                updateRepository.checkForGithubReleaseUpdate().collectLatest { response ->
-                    val data = response.data
-                    when (response) {
-                        is Resource.Success if (data != null) -> {
-                            _updateResponse.value = data
-                            showedUpdateDialog = true
-                        }
-
-                        else -> {
-                            log("Check for update error: ${response.message}", LogLevel.WARN)
-                        }
-                    }
-                    _isCheckingUpdate.value = false
-                }
-            } else if (updateChannel == DataStoreManager.FDROID) {
-                updateRepository.checkForFdroidUpdate().collectLatest { response ->
-                    val data = response.data
-                    when (response) {
-                        is Resource.Success if (data != null) -> {
-                            _updateResponse.value = data
-                            showedUpdateDialog = true
-                        }
-
-                        else -> {
-                            log("Check for update error: ${response.message}", LogLevel.WARN)
-                        }
-                    }
-                    _isCheckingUpdate.value = false
-                }
-            }
-        }.invokeOnCompletion {
-            // Also for a channel neither branch handles, and for a check that throws: the launch
-            // banner waits for this flag, so it must never stay raised.
-            _isCheckingUpdate.value = false
-        }
+        _isCheckingUpdate.value = false
     }
 
     /**
-     * [signingCerts]: SHA-256 hex of each certificate this APK is signed with. A failed fetch leaves
-     * the app usable — it plays offline, and an unknown answer must not lock out our own users.
+     * Anti-tamper check disabled: always keeps _isOfficialBuild as true.
      */
     fun checkOfficialBuild(
         packageName: String,
         signingCerts: List<String>,
     ) {
-        if (packageName !in Config.OFFICIAL_PACKAGE_NAMES) {
-            _isOfficialBuild.value = false
-            return
-        }
-        viewModelScope.launch {
-            updateRepository.getFdroidSigningKeys().collect { response ->
-                val keys = response.data
-                // No certificate read at all is an unknown answer, and unknown never blocks.
-                if (response is Resource.Success && keys != null && signingCerts.isNotEmpty() && keys.none { it in signingCerts }) {
-                    _isOfficialBuild.value = false
-                }
-            }
-        }
+        _isOfficialBuild.value = true
     }
 
     fun stopPlayer() {
@@ -2163,7 +2106,7 @@ class SharedViewModel(
         _reloadDestination.value = null
     }
 
-    fun shouldCheckForUpdate(): Boolean = runBlocking { dataStoreManager.autoCheckForUpdates.first() == TRUE }
+    fun shouldCheckForUpdate(): Boolean = false
 
     private var _downloadFileProgress = MutableStateFlow<DownloadProgress>(DownloadProgress.INIT)
     val downloadFileProgress: StateFlow<DownloadProgress> get() = _downloadFileProgress

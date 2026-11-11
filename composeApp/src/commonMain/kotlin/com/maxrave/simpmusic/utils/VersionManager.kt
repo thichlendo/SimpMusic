@@ -19,7 +19,7 @@ object VersionManager {
     fun getVersionName(): String = removeDevSuffix(versionName ?: String())
 
     /** True when [tag] names a release newer than this build. */
-    fun isBehind(tag: String): Boolean = isNewerRelease(current = getVersionName(), tag = tag)
+    fun isBehind(tag: String): Boolean = false
 
     private fun removeDevSuffix(versionName: String): String {
         return if (versionName.endsWith("-dev")) {
