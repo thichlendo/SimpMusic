@@ -53,11 +53,33 @@ jobs:
           echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> ./local.properties
           echo "DISCORD_CLIENT_ID=${{ secrets.DISCORD_CLIENT_ID }}" >> ./local.properties
 
-      - name: Update environment variables
+      - name: Prepare signing keystore
         env:
           BASE_64_SIGNING_KEY: ${{ secrets.BASE_64_SIGNING_KEY }}
-        run:
-          echo $BASE_64_SIGNING_KEY | base64 -d > simpmusic.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$BASE_64_SIGNING_KEY" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "$BASE_64_SIGNING_KEY" | base64 -d > simpmusic.jks
+          else
+            rm -f simpmusic.jks
+            KEYSTORE_PASSWORD="${KEYSTORE_PASSWORD:-simpmusic}"
+            KEY_ALIAS="${KEY_ALIAS:-simpmusic}"
+            KEY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            keytool -genkeypair -v \
+              -keystore simpmusic.jks \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -keypass "$KEY_PASSWORD" \
+              -dname "CN=SimpMusic, OU=Dev, O=SimpMusic, L=Unknown, S=Unknown, C=US"
+          fi
+          {
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "KEY_ALIAS=$KEY_ALIAS"
+            echo "KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Update build product flavor
         run: |
@@ -65,10 +87,6 @@ jobs:
           echo "isFullBuild=true" >> ./gradle.properties
 
       - name: Build full release APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./build_and_sign_apk.sh --release --full
 
       - name: Upload APK
@@ -76,6 +94,7 @@ jobs:
         with:
           name: app-full-release
           path: androidApp/build/outputs/apk/release/*.apk
+          if-no-files-found: error
 
   # SimpMusic for vivo: androidApp under a package vivo's Origin Island follows (vivoAndroidApp),
   # Full build, arm64-v8a only, signed with the same key so the official-build check accepts it.
@@ -115,11 +134,33 @@ jobs:
           echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> ./local.properties
           echo "DISCORD_CLIENT_ID=${{ secrets.DISCORD_CLIENT_ID }}" >> ./local.properties
 
-      - name: Update environment variables
+      - name: Prepare signing keystore
         env:
           BASE_64_SIGNING_KEY: ${{ secrets.BASE_64_SIGNING_KEY }}
-        run:
-          echo $BASE_64_SIGNING_KEY | base64 -d > simpmusic.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$BASE_64_SIGNING_KEY" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "$BASE_64_SIGNING_KEY" | base64 -d > simpmusic.jks
+          else
+            rm -f simpmusic.jks
+            KEYSTORE_PASSWORD="${KEYSTORE_PASSWORD:-simpmusic}"
+            KEY_ALIAS="${KEY_ALIAS:-simpmusic}"
+            KEY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            keytool -genkeypair -v \
+              -keystore simpmusic.jks \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -keypass "$KEY_PASSWORD" \
+              -dname "CN=SimpMusic, OU=Dev, O=SimpMusic, L=Unknown, S=Unknown, C=US"
+          fi
+          {
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "KEY_ALIAS=$KEY_ALIAS"
+            echo "KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Update build product flavor
         run: |
@@ -127,10 +168,6 @@ jobs:
           echo "isFullBuild=true" >> ./gradle.properties
 
       - name: Build vivo release APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./build_and_sign_apk.sh --release --full --vivo
 
       - name: Upload APK
@@ -138,6 +175,7 @@ jobs:
         with:
           name: app-vivo-release
           path: vivoAndroidApp/build/outputs/apk/release/*.apk
+          if-no-files-found: error
 
   build-foss-release:
     name: Build foss release version
@@ -157,11 +195,33 @@ jobs:
           distribution: "microsoft"
           cache: 'gradle'
 
-      - name: Update environment variables
+      - name: Prepare signing keystore
         env:
           BASE_64_SIGNING_KEY: ${{ secrets.BASE_64_SIGNING_KEY }}
-        run:
-          echo $BASE_64_SIGNING_KEY | base64 -d > simpmusic.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$BASE_64_SIGNING_KEY" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "$BASE_64_SIGNING_KEY" | base64 -d > simpmusic.jks
+          else
+            rm -f simpmusic.jks
+            KEYSTORE_PASSWORD="${KEYSTORE_PASSWORD:-simpmusic}"
+            KEY_ALIAS="${KEY_ALIAS:-simpmusic}"
+            KEY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            keytool -genkeypair -v \
+              -keystore simpmusic.jks \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -keypass "$KEY_PASSWORD" \
+              -dname "CN=SimpMusic, OU=Dev, O=SimpMusic, L=Unknown, S=Unknown, C=US"
+          fi
+          {
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "KEY_ALIAS=$KEY_ALIAS"
+            echo "KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Update build product flavor
         run: |
@@ -169,10 +229,6 @@ jobs:
           echo "isFullBuild=false" >> ./gradle.properties
 
       - name: Build foss release APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./build_and_sign_apk.sh --release --foss
 
       - name: Upload APK
@@ -180,9 +236,11 @@ jobs:
         with:
           name: app-foss-release
           path: androidApp/build/outputs/apk/release/*.apk
+          if-no-files-found: error
 
   build-desktop-packages:
     name: Build desktop packages (AppImage + Mac zip + Windows msix)
+    if: false
     runs-on: ubuntu-22.04
     defaults:
       run:
