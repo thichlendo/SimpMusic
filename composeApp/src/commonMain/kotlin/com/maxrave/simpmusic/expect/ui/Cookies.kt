@@ -10,6 +10,8 @@ interface WebViewCookieManager {
     fun getCookie(url: String): String
 
     fun removeAllCookies()
+
+    fun flush()
 }
 
 expect fun createWebViewCookieManager(): WebViewCookieManager
@@ -36,6 +38,7 @@ expect fun PlatformWebView(
     // Wipes WebView cookies just before initUrl loads. Done here rather than by the caller because
     // touching CookieManager before the WebView has started loads WebView on the main thread.
     clearCookies: Boolean = false,
+    onUrlChanged: (String) -> Unit = {},
     onPageFinished: (String) -> Unit,
 )
 

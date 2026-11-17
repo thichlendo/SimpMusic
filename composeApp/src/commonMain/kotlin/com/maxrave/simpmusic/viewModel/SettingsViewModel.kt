@@ -1550,15 +1550,7 @@ class SettingsViewModel(
         cookie: String,
         netscapeCookie: String? = null,
     ): Boolean {
-        val currentCookie = dataStoreManager.cookie.first()
-        val currentPageId = dataStoreManager.pageId.first()
-        val currentAuthUser = dataStoreManager.authUser.first()
-        val currentLoggedIn = dataStoreManager.loggedIn.first() == DataStoreManager.TRUE
         try {
-            runBlocking {
-                dataStoreManager.setCookie(cookie, "")
-                dataStoreManager.setLoggedIn(true)
-            }
             return accountRepository
                 .getAccountInfo(
                     cookie,
@@ -1622,19 +1614,11 @@ class SettingsViewModel(
                     true
                 } ?: run {
                 Logger.w("Auth", "YouTube: sign-in failed, YouTube returned no account for this cookie")
-                runBlocking {
-                    dataStoreManager.setCookie(currentCookie, currentPageId, currentAuthUser)
-                    dataStoreManager.setLoggedIn(currentLoggedIn)
-                }
                 false
             }
         } catch (e: Exception) {
             e.printStackTrace()
             Logger.e("Auth", "YouTube: sign-in failed: ${e.message}")
-            runBlocking {
-                dataStoreManager.setCookie(currentCookie, currentPageId, currentAuthUser)
-                dataStoreManager.setLoggedIn(currentLoggedIn)
-            }
             return false
         }
     }

@@ -9,6 +9,7 @@ import android.webkit.CookieManager
 import android.webkit.JsResult
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.TextView
@@ -54,6 +55,10 @@ actual fun createWebViewCookieManager(): WebViewCookieManager =
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()
         }
+
+        override fun flush() {
+            CookieManager.getInstance().flush()
+        }
     }
 
 @Composable
@@ -62,12 +67,13 @@ actual fun PlatformWebView(
     initUrl: String,
     aboveContent: @Composable (BoxScope.() -> Unit),
     clearCookies: Boolean,
+    onUrlChanged: (String) -> Unit,
     onPageFinished: (String) -> Unit,
 ) {
     // Once per visit: Retry rebuilds the WebView, and clearing again would drop a sign-in that
     // finished before the renderer was killed.
     val cookiesCleared = remember { AtomicBoolean(false) }
-    Box {
+    Box(modifier = Modifier.fillMaxSize()) {
         ManagedWebView { onRendererGone ->
             layoutParams =
                 ViewGroup.LayoutParams(
@@ -76,11 +82,35 @@ actual fun PlatformWebView(
                 )
             webViewClient =
                 object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                    ): Boolean {
+                        request?.url?.toString()?.let { url ->
+                            CookieManager.getInstance().flush()
+                            onUrlChanged(url)
+                        }
+                        return false
+                    }
+
+                    override fun doUpdateVisitedHistory(
+                        view: WebView?,
+                        url: String?,
+                        isReload: Boolean,
+                    ) {
+                        super.doUpdateVisitedHistory(view, url, isReload)
+                        url?.let {
+                            CookieManager.getInstance().flush()
+                            onUrlChanged(it)
+                        }
+                    }
+
                     override fun onPageFinished(
                         view: WebView?,
                         url: String?,
                     ) {
                         url?.let {
+                            CookieManager.getInstance().flush()
                             onPageFinished(it)
                         }
                     }
@@ -90,8 +120,18 @@ actual fun PlatformWebView(
                         detail: RenderProcessGoneDetail,
                     ): Boolean = handleRendererGone(detail, onRendererGone)
                 }
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
+            val webView = this
+            CookieManager.getInstance().apply {
+                setAcceptCookie(true)
+                setAcceptThirdPartyCookies(webView, true)
+            }
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                useWideViewPort = true
+                loadWithOverviewMode = true
+                userAgentString = ANDROID_MOBILE_USER_AGENT
+            }
 
             // Runs inside the factory, so after ManagedWebView's startup has finished.
             if (clearCookies && cookiesCleared.compareAndSet(false, true)) {
@@ -297,3 +337,5 @@ const val JS_SNIPPET =
 private const val MOTOROLA = "motorola"
 private const val SAMSUNG_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; SM-S921U; Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.363"
+private const val ANDROID_MOBILE_USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"

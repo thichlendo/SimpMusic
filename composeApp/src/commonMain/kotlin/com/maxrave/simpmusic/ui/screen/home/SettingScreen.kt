@@ -87,6 +87,7 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.annotation.ExperimentalCoilApi
@@ -637,7 +638,7 @@ fun SettingScreen(
         mutableStateOf(false)
     }
 
-    LaunchedEffect(true) {
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         viewModel.getAllGoogleAccount()
     }
 

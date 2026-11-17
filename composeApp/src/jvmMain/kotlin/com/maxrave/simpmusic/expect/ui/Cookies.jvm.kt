@@ -37,6 +37,8 @@ actual fun createWebViewCookieManager(): WebViewCookieManager =
                 CookieManager(),
             )
         }
+
+        override fun flush() {}
     }
 
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
@@ -46,6 +48,7 @@ actual fun PlatformWebView(
     initUrl: String,
     aboveContent: @Composable (BoxScope.() -> Unit),
     clearCookies: Boolean,
+    onUrlChanged: (String) -> Unit,
     onPageFinished: (String) -> Unit,
 ) {
     Box(

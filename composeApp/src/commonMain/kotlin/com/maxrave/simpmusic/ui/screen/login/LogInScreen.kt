@@ -27,6 +27,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -48,6 +49,7 @@ import com.maxrave.logger.Logger
 import com.maxrave.simpmusic.Platform
 import com.maxrave.simpmusic.getPlatform
 import com.maxrave.simpmusic.expect.openUrl
+import com.maxrave.simpmusic.expect.ui.PlatformBackHandler
 import com.maxrave.simpmusic.expect.ui.PlatformWebView
 import com.maxrave.simpmusic.expect.ui.createWebViewCookieManager
 import com.maxrave.simpmusic.expect.ui.rememberWebViewState
@@ -113,6 +115,7 @@ fun LoginScreen(
     }
 
     val state = rememberWebViewState()
+    var isHandlingLogin by remember { mutableStateOf(false) }
     // Resolve the Desktop-only dependency only on Desktop. Android keeps its existing WebView.
     val browserViewModel = if (getPlatform() == Platform.Desktop) koinViewModel<BrowserLoginViewModel>() else null
     val browserState = browserViewModel?.state?.collectAsStateWithLifecycle()?.value
@@ -182,8 +185,56 @@ fun LoginScreen(
         }
     }
 
+    val checkAndCompleteWebViewLogin: (String, Boolean) -> Unit = { url, showFailureToast ->
+        Logger.d("LogInScreen", "Current URL: $url")
+        if (!isHandlingLogin) {
+            val cookieManager = createWebViewCookieManager()
+            cookieManager.flush()
+            val cookie = cookieManager.getCookie(Config.YOUTUBE_MUSIC_MAIN_URL)
+            if (shouldAutoCompleteYouTubeLogin(url, cookie)) {
+                isHandlingLogin = true
+                coroutineScope.launch {
+                    val success = settingsViewModel.addAccount(cookie)
+                    if (success) {
+                        cookieManager.removeAllCookies()
+                        viewModel.makeToast(getString(Res.string.login_success))
+                        navController.navigateUp()
+                    } else {
+                        isHandlingLogin = false
+                        if (showFailureToast && isMusicYouTubeUrl(url)) {
+                            viewModel.makeToast(getString(Res.string.login_failed))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val handleBack: () -> Unit = {
+        if (browserViewModel != null) {
+            navController.navigateUp()
+        } else if (!isHandlingLogin) {
+            isHandlingLogin = true
+            coroutineScope.launch {
+                val cookieManager = createWebViewCookieManager()
+                cookieManager.flush()
+                val cookie = cookieManager.getCookie(Config.YOUTUBE_MUSIC_MAIN_URL)
+                if (hasYouTubeAuthCookies(cookie)) {
+                    val success = settingsViewModel.addAccount(cookie)
+                    if (success) {
+                        cookieManager.removeAllCookies()
+                        viewModel.makeToast(getString(Res.string.login_success))
+                    }
+                }
+                navController.navigateUp()
+            }
+        }
+    }
+
+    PlatformBackHandler(enabled = browserViewModel == null, onBack = handleBack)
+
     Box(modifier = Modifier.fillMaxSize().hazeSource(state = hazeState)) {
-        Column(if (browserViewModel != null) Modifier.fillMaxSize() else Modifier) {
+        Column(Modifier.fillMaxSize()) {
             Spacer(
                 Modifier
                     .size(
@@ -214,7 +265,6 @@ fun LoginScreen(
                     )
                 }
             } else {
-                // WebView for YouTube Music login, unchanged on Android.
                 PlatformWebView(
                     state,
                     Config.LOG_IN_URL,
@@ -222,30 +272,9 @@ fun LoginScreen(
                         manualLogin()
                     },
                     clearCookies = true,
-                ) { url ->
-                    Logger.d("LogInScreen", "Current URL: $url")
-                    if (url == Config.YOUTUBE_MUSIC_MAIN_URL) {
-                        coroutineScope.launch {
-                            val success =
-                                createWebViewCookieManager()
-                                    .getCookie(url)
-                                    .takeIf {
-                                        it.isNotEmpty()
-                                    }?.let {
-                                        settingsViewModel.addAccount(it)
-                                    } ?: false
-
-                            createWebViewCookieManager().removeAllCookies()
-
-                            if (success) {
-                                viewModel.makeToast(getString(Res.string.login_success))
-                                navController.navigateUp()
-                            } else {
-                                viewModel.makeToast(getString(Res.string.login_failed))
-                            }
-                        }
-                    }
-                }
+                    onUrlChanged = { url -> checkAndCompleteWebViewLogin(url, false) },
+                    onPageFinished = { url -> checkAndCompleteWebViewLogin(url, true) },
+                )
             }
         }
 
@@ -271,7 +300,7 @@ fun LoginScreen(
                         true,
                         tint = MaterialTheme.colorScheme.onSurface,
                     ) {
-                        navController.navigateUp()
+                        handleBack()
                     }
                 }
             },
@@ -401,3 +430,42 @@ internal fun BrowserLoginPanel(
         }
     }
 }
+
+internal fun isMusicYouTubeUrl(url: String): Boolean {
+    val host =
+        url
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .substringBefore("/")
+            .substringBefore("?")
+            .substringBefore("#")
+    return host.equals("music.youtube.com", ignoreCase = true)
+}
+
+internal fun parseYouTubeCookies(cookieHeader: String): Map<String, String> =
+    cookieHeader
+        .split(";")
+        .mapNotNull { part ->
+            val trimmed = part.trim()
+            val eqIndex = trimmed.indexOf('=')
+            if (eqIndex <= 0) return@mapNotNull null
+            val key = trimmed.substring(0, eqIndex).trim()
+            val value = trimmed.substring(eqIndex + 1).trim()
+            if (key.isEmpty() || value.isEmpty()) null else key to value
+        }.toMap()
+
+internal fun hasYouTubeAuthCookies(
+    cookieHeader: String,
+    requireLoginInfo: Boolean = false,
+): Boolean {
+    val cookies = parseYouTubeCookies(cookieHeader)
+    val hasSapisid = !cookies["SAPISID"].isNullOrBlank() && !cookies["__Secure-3PAPISID"].isNullOrBlank()
+    return if (requireLoginInfo) hasSapisid && !cookies["LOGIN_INFO"].isNullOrBlank() else hasSapisid
+}
+
+internal fun shouldAutoCompleteYouTubeLogin(
+    url: String,
+    cookieHeader: String,
+): Boolean =
+    hasYouTubeAuthCookies(cookieHeader, requireLoginInfo = true) ||
+        (isMusicYouTubeUrl(url) && hasYouTubeAuthCookies(cookieHeader, requireLoginInfo = false))
