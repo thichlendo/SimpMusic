@@ -4,7 +4,6 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -34,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,14 +46,15 @@ import androidx.compose.ui.text.style.ResolvedTextDirection
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import com.maxrave.domain.data.model.metadata.Line
+import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.simpmusic.extension.ParsedRichSyncLine
 import com.maxrave.simpmusic.extension.parseRichSyncWords
+import com.maxrave.simpmusic.ui.component.AUDIO_OUTPUT_LATENCY_MS
+import com.maxrave.simpmusic.ui.component.PlayheadInterpolator
 import com.maxrave.simpmusic.ui.component.rememberLyricLayoutDirection
 import com.maxrave.simpmusic.ui.screen.player.content.NowPlayingContentState
 import com.maxrave.simpmusic.ui.screen.player.content.stripRichSyncTimestamps
-import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.roundToLong
+import org.koin.compose.koinInject
 
 /**
  * The line being sung, directly over the progress bar. Tapping it opens the Lyrics tab.
@@ -75,6 +76,7 @@ internal fun AppleMusicLyricStrip(
     typography: AppleMusicTypography,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    mediaPlayerHandler: MediaPlayerHandler = koinInject(),
 ) {
     val lyrics = state.screenData.lyricsData?.lyrics
     val syncType = lyrics?.syncType
@@ -86,7 +88,9 @@ internal fun AppleMusicLyricStrip(
 
     val playhead =
         rememberSweepPlayhead(
+            mediaPlayerHandler = mediaPlayerHandler,
             rawMs = state.timelineState.current - state.lyricsOffsetMs,
+            lyricsOffsetMs = state.lyricsOffsetMs,
             running = line != null && richSynced && state.controllerState.isPlaying,
         )
 
@@ -266,41 +270,31 @@ private fun sweepX(
  */
 @Composable
 internal fun rememberSweepPlayhead(
+    mediaPlayerHandler: MediaPlayerHandler,
     rawMs: Long,
+    lyricsOffsetMs: Long,
     running: Boolean,
 ): State<Long> {
-    val playhead = remember { mutableLongStateOf(rawMs) }
+    val playhead = remember { mutableLongStateOf(rawMs - AUDIO_OUTPUT_LATENCY_MS) }
     val latestRaw by rememberUpdatedState(rawMs)
+    val latestOffset by rememberUpdatedState(lyricsOffsetMs)
+    val interpolator = remember { PlayheadInterpolator() }
     LaunchedEffect(running) {
+        interpolator.reset()
         if (!running) {
-            snapshotFlow { latestRaw }.collect { playhead.longValue = it }
+            snapshotFlow { latestRaw - AUDIO_OUTPUT_LATENCY_MS }.collect { playhead.longValue = it }
             return@LaunchedEffect
         }
-        var reported = latestRaw
-        var reportedAt = -1L
-        var lastFrame = -1L
-        var position = playhead.longValue.toDouble()
         while (true) {
-            withInfiniteAnimationFrameNanos { now ->
-                if (reportedAt < 0L || latestRaw != reported) {
-                    reported = latestRaw
-                    reportedAt = now
-                }
-                // Where the last report puts the song by now. Capped, so a player that has stalled
-                // (no new report while it buffers) cannot drag the light on without it.
-                val target = reported + ((now - reportedAt) / 1_000_000.0).coerceAtMost(SWEEP_MAX_EXTRAPOLATION_MS)
-                val step = if (lastFrame < 0L) 0.0 else (now - lastFrame) / 1_000_000.0
-                lastFrame = now
-                position =
-                    if (abs(target - position) > SWEEP_SNAP_MS) {
-                        target
-                    } else {
-                        // Close a share of the gap each frame, in proportion to the frame's length so
-                        // 60 Hz and 120 Hz settle alike; max() keeps it from ever running backwards.
-                        val advanced = position + step
-                        max(position, advanced + (target - advanced) * (step / SWEEP_CATCH_UP_MS).coerceAtMost(1.0))
-                    }
-                playhead.longValue = position.roundToLong()
+            withFrameNanos { frameNanos ->
+                val player = mediaPlayerHandler.player
+                playhead.longValue =
+                    interpolator.advance(
+                        frameNanos = frameNanos,
+                        reportedPosMs = player.currentPosition,
+                        speed = player.playbackParameters.speed,
+                        offsetMs = AUDIO_OUTPUT_LATENCY_MS + latestOffset,
+                    )
             }
         }
     }
@@ -320,10 +314,3 @@ private const val LINE_CHANGE_MS = 340
 
 // A line's end time is often absent; the last word is then given this long to light.
 private const val LAST_WORD_FALLBACK_MS = 600L
-
-// How the sweep's own clock tracks the reported position: the time it takes to close most of a
-// gap, the largest gap it closes gradually rather than jumping, and how far past the last report
-// it will run on its own.
-private const val SWEEP_CATCH_UP_MS = 150.0
-private const val SWEEP_SNAP_MS = 500.0
-private const val SWEEP_MAX_EXTRAPOLATION_MS = 250.0

@@ -36,6 +36,7 @@ import com.maxrave.simpmusic.ui.component.RippleIconButton
 import com.maxrave.simpmusic.ui.icon.Help
 import com.maxrave.simpmusic.ui.icon.SimpIcons
 import com.maxrave.simpmusic.ui.theme.typo
+import com.maxrave.simpmusic.viewModel.MAX_KARAOKE_GUIDE_VOCAL_LEVEL
 import com.maxrave.simpmusic.viewModel.SettingsViewModel
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
@@ -47,6 +48,7 @@ import simpmusic.composeapp.generated.resources.delay_preset_slapback
 import simpmusic.composeapp.generated.resources.effect_feedback
 import simpmusic.composeapp.generated.resources.effect_mix
 import simpmusic.composeapp.generated.resources.effect_time
+import simpmusic.composeapp.generated.resources.karaoke_guide_vocal
 import simpmusic.composeapp.generated.resources.ok
 import simpmusic.composeapp.generated.resources.reverb_help_cathedral
 import simpmusic.composeapp.generated.resources.reverb_help_damping
@@ -262,6 +264,27 @@ fun ReverbSection(viewModel: SettingsViewModel = koinViewModel()) {
 }
 
 /**
+ * The Karaoke guide-vocal slider block, shown inside Settings when Karaoke Mode is enabled.
+ */
+@Composable
+fun KaraokeSection(viewModel: SettingsViewModel = koinViewModel()) {
+    val guideVocalLevel by viewModel.karaokeGuideVocalLevel.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) { viewModel.getAudioEffects() }
+
+    EffectCard {
+        EffectSlider(
+            label = stringResource(Res.string.karaoke_guide_vocal),
+            value = guideVocalLevel,
+            valueRange = 0f..MAX_KARAOKE_GUIDE_VOCAL_LEVEL,
+            readout = { "${(it * 100).roundToInt()} %" },
+            onValueChange = { viewModel.previewKaraokeGuideVocalLevel(it) },
+            onCommit = { viewModel.setKaraokeGuideVocalLevel(it) },
+        )
+    }
+}
+
+/**
  * What the four rooms and the mix slider actually do, in the user's language.
  *
  * The three figures under each preset are read off [ReverbPreset] itself rather than typed into
@@ -402,6 +425,7 @@ private fun EffectSlider(
     onCommit: (Float) -> Unit,
     modifier: Modifier = Modifier,
     snap: (Float) -> Float = { it },
+    onValueChange: ((Float) -> Unit)? = null,
 ) {
     var draft by remember { mutableStateOf<Float?>(null) }
     LaunchedEffect(value) { draft = null }
@@ -421,7 +445,11 @@ private fun EffectSlider(
         ) {
             Slider(
                 value = shown,
-                onValueChange = { draft = snap(it).coerceIn(valueRange.start, valueRange.endInclusive) },
+                onValueChange = {
+                    val snapped = snap(it).coerceIn(valueRange.start, valueRange.endInclusive)
+                    draft = snapped
+                    onValueChange?.invoke(snapped)
+                },
                 onValueChangeFinished = { draft?.let(onCommit) },
                 valueRange = valueRange,
                 modifier = Modifier.weight(1f),

@@ -45,8 +45,13 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawWithContent
@@ -69,6 +74,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.data.model.lyrics.RomanizationDictionaryState
 import com.maxrave.domain.data.model.lyrics.RomanizationLanguage
+import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.domain.repository.LyricsRomanizerRepository
 import com.maxrave.simpmusic.expect.ui.isLyricsBlurSupported
 import com.maxrave.domain.data.model.metadata.Line
@@ -87,7 +93,12 @@ import com.maxrave.simpmusic.extension.parseRichSyncWords
 import com.maxrave.simpmusic.ui.theme.typo
 import com.maxrave.simpmusic.viewModel.NowPlayingScreenData
 import com.maxrave.simpmusic.viewModel.SharedViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 import java.text.Bidi
@@ -96,6 +107,7 @@ import kotlin.math.exp
 import kotlin.math.sqrt
 import kotlin.math.min
 import kotlin.math.max
+import kotlin.math.roundToLong
 
 private const val TAG = "LyricsView"
 
@@ -104,6 +116,124 @@ private const val TAG = "LyricsView"
 // playhead below is allowed to run ahead of the last real tick, so a stalled tick — paused
 // playback, a wedged player — can never drift further than the granularity we already live with.
 private const val PLAYHEAD_TICK_MS = 50L
+
+// Compensates typical Android audio sink / mixer output buffer latency so lyrics match heard audio.
+internal const val AUDIO_OUTPUT_LATENCY_MS = 50L
+private const val MANUAL_SCROLL_RESUME_DELAY_MS = 3_000L
+
+internal class PlayheadInterpolator {
+    private var initialized = false
+    private var anchorNanos = -1L
+    private var lastFrameNanos = -1L
+    private var lastReportedPosMs = Long.MIN_VALUE
+    private var currentMs = 0.0
+
+    fun reset() {
+        initialized = false
+        anchorNanos = -1L
+        lastFrameNanos = -1L
+        lastReportedPosMs = Long.MIN_VALUE
+        currentMs = 0.0
+    }
+
+    fun advance(
+        frameNanos: Long,
+        reportedPosMs: Long,
+        speed: Float,
+        offsetMs: Long,
+    ): Long {
+        val safeSpeed = speed.coerceAtLeast(0.1f).toDouble()
+        if (anchorNanos < 0L || reportedPosMs != lastReportedPosMs) {
+            lastReportedPosMs = reportedPosMs
+            anchorNanos = frameNanos
+        }
+        val sinceAnchorMs = ((frameNanos - anchorNanos) / 1_000_000.0).coerceIn(0.0, MAX_EXTRAPOLATION_MS)
+        val targetMs = lastReportedPosMs + sinceAnchorMs * safeSpeed
+        val dtMs =
+            if (lastFrameNanos < 0L) {
+                0.0
+            } else {
+                ((frameNanos - lastFrameNanos) / 1_000_000.0).coerceIn(0.0, MAX_FRAME_STEP_MS)
+            }
+        lastFrameNanos = frameNanos
+
+        if (!initialized || abs(targetMs - currentMs) > SNAP_THRESHOLD_MS) {
+            currentMs = targetMs
+            initialized = true
+        } else {
+            val predicted = currentMs + dtMs * safeSpeed
+            val blend = (dtMs / CATCH_UP_MS).coerceAtMost(1.0)
+            val maxAllowedMs = lastReportedPosMs + MAX_EXTRAPOLATION_MS * safeSpeed
+            val candidate = min(maxAllowedMs, predicted + (targetMs - predicted) * blend)
+            currentMs = max(currentMs, candidate)
+        }
+        return currentMs.roundToLong() - offsetMs
+    }
+
+    private companion object {
+        const val CATCH_UP_MS = 100.0
+        const val SNAP_THRESHOLD_MS = 250.0
+        const val MAX_EXTRAPOLATION_MS = 250.0
+        const val MAX_FRAME_STEP_MS = 100.0
+    }
+}
+
+@Composable
+internal fun rememberInterpolatedPlayhead(
+    mediaPlayerHandler: MediaPlayerHandler,
+    timeLine: StateFlow<TimeLine>,
+    lyricsOffsetMs: Int,
+    resetKey: Any?,
+): State<Long> {
+    val isPlaying by remember(mediaPlayerHandler) {
+        mediaPlayerHandler.controlState.map { it.isPlaying }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = mediaPlayerHandler.player.isPlaying)
+    val latestOffsetMs by rememberUpdatedState(lyricsOffsetMs.toLong())
+    val playhead =
+        remember {
+            val initialPos = mediaPlayerHandler.player.currentPosition.takeIf { it > 0L } ?: timeLine.value.current
+            mutableLongStateOf(initialPos - AUDIO_OUTPUT_LATENCY_MS - lyricsOffsetMs)
+        }
+    val interpolator = remember { PlayheadInterpolator() }
+
+    LaunchedEffect(isPlaying, resetKey) {
+        interpolator.reset()
+        if (!isPlaying) {
+            val currentLive = mediaPlayerHandler.player.currentPosition
+            if (currentLive > 0L) {
+                playhead.longValue = currentLive - AUDIO_OUTPUT_LATENCY_MS - latestOffsetMs
+            }
+            var first = true
+            combine(
+                timeLine.map { it.current }.distinctUntilChanged(),
+                snapshotFlow { latestOffsetMs },
+            ) { pos, off ->
+                pos - AUDIO_OUTPUT_LATENCY_MS - off
+            }.collect { value ->
+                if (first && currentLive > 0L) {
+                    first = false
+                } else {
+                    first = false
+                    playhead.longValue = value
+                }
+            }
+            return@LaunchedEffect
+        }
+        while (true) {
+            withFrameNanos { frameNanos ->
+                val player = mediaPlayerHandler.player
+                playhead.longValue =
+                    interpolator.advance(
+                        frameNanos = frameNanos,
+                        reportedPosMs = player.currentPosition,
+                        speed = player.playbackParameters.speed,
+                        offsetMs = AUDIO_OUTPUT_LATENCY_MS + latestOffsetMs,
+                    )
+            }
+        }
+    }
+    return playhead
+}
 
 // A rich-synced line followed by a silence at least this long gets a row of dots standing in for
 // the instrumental, the way Apple Music marks one. Rich sync only: it is the one format that knows
@@ -435,6 +565,7 @@ fun LyricsView(
     footerContent: (@Composable () -> Unit)? = null,
     dataStoreManager: DataStoreManager = koinInject(),
     romanizer: LyricsRomanizerRepository = koinInject(),
+    mediaPlayerHandler: MediaPlayerHandler = koinInject(),
 ) {
     val listState = rememberLazyListState()
     // AMLL drops blur to zero while the user is scrolling by hand (resolveBlurLevel:
@@ -442,7 +573,6 @@ fun LyricsView(
     // that moment, and out-of-focus text is not readable. Dragged, not isScrollInProgress: the
     // latter is also true for the player's own animated scroll, which must stay blurred.
     val isDragging by listState.interactionSource.collectIsDraggedAsState()
-    val current by timeLine.collectAsStateWithLifecycle()
 
     // The listener's audio-delay correction, applied HERE rather than to the lyric rows: the rows
     // are cached in Room and shared with the community lyrics database, so a local correction must
@@ -460,7 +590,7 @@ fun LyricsView(
     // would be four copies of the same lookup. Re-checked against isLyricsBlurSupported() even
     // though Settings hides the option below Android 12 — a DataStore restored from a backup, or
     // carried to another device, can still hold APPLE_MUSIC on a phone that cannot draw it.
-    val lyricsStyle by dataStoreManager.lyricsStyle.collectAsStateWithLifecycle(DataStoreManager.LYRICS_STYLE_CLASSIC)
+    val lyricsStyle by dataStoreManager.lyricsStyle.collectAsStateWithLifecycle(DataStoreManager.LYRICS_STYLE_APPLE_MUSIC)
     val appleStyle = lyricsStyle == DataStoreManager.LYRICS_STYLE_APPLE_MUSIC && isLyricsBlurSupported()
 
     // Read here for the same reason the style is: all four call sites want the user's one choice,
@@ -529,9 +659,11 @@ fun LyricsView(
             }
         }
 
-    val currentLineIndex by remember(timedLineIndexes) {
+    val playheadState = rememberInterpolatedPlayhead(mediaPlayerHandler, timeLine, lyricsOffsetMs, resetKey = displayLines)
+
+    val activeLineIndex by remember(timedLineIndexes) {
         derivedStateOf {
-            val now = current.current - lyricsOffsetMs
+            val now = playheadState.value
             if (now <= 0L) -1 else timedLineIndexes.activeIndexAt(now)
         }
     }
@@ -540,7 +672,7 @@ fun LyricsView(
     // whether a line can ever be "the sung one", and [timedLineIndexes] is already empty exactly
     // when they cannot order anything. Every line then renders as the current line — white, fully
     // opaque, unblurred — because a sheet with no sung line has no line to contrast one against.
-    // Distinct from a SYNCED sheet's pre-roll, where currentLineIndex is also -1 but a sung line is
+    // Distinct from a SYNCED sheet's pre-roll, where activeLineIndex is also -1 but a sung line is
     // on its way and PRE_ROLL_LINE_ALPHA deliberately keeps the page dimmer than it.
     val allLinesCurrent = timedLineIndexes.isEmpty()
 
@@ -559,10 +691,20 @@ fun LyricsView(
     // so a new song's first line counts as the next line rather than as a jump.
     val stagger = remember(displayLines) { LyricsStagger() }
 
-    LaunchedEffect(currentLineIndex, lyricsData.lyrics.syncType, appleStyle, stagger) {
-        if (currentLineIndex > -1 &&
-            (lyricsData.lyrics.syncType == "LINE_SYNCED" || lyricsData.lyrics.syncType == "RICH_SYNCED")
-        ) {
+    var userScrolledManually by remember(displayLines) { mutableStateOf(false) }
+    LaunchedEffect(isDragging) {
+        if (isDragging) {
+            userScrolledManually = true
+        } else if (userScrolledManually) {
+            snapshotFlow { listState.isScrollInProgress }.first { !it }
+            delay(MANUAL_SCROLL_RESUME_DELAY_MS)
+            userScrolledManually = false
+        }
+    }
+
+    LaunchedEffect(activeLineIndex, displayLines, appleStyle) {
+        if (activeLineIndex < 0 || isDragging || userScrolledManually) return@LaunchedEffect
+        if (lyricsData.lyrics.syncType == "LINE_SYNCED" || lyricsData.lyrics.syncType == "RICH_SYNCED") {
             if (appleStyle) {
                 // NEAR the top, not against it: Apple leaves exactly ONE physical row of the
                 // previous lyric visible above the line being sung. Scrolling to `index - 1`
@@ -570,9 +712,9 @@ fun LyricsView(
                 // lyric that wraps is one item spanning two or three rows, so the entire wrapped
                 // block hung above the sung line. Anchoring the sung line itself and backing off by
                 // one row's height is row-accurate no matter how the previous line wrapped.
-                listState.animateScrollAndAnchorItemTop(currentLineIndex, -exposedRowPx, stagger)
+                listState.animateScrollAndAnchorItemTop(activeLineIndex, -exposedRowPx, stagger)
             } else {
-                listState.animateScrollAndCentralizeItem(currentLineIndex)
+                listState.animateScrollAndCentralizeItem(activeLineIndex)
             }
         }
     }
@@ -613,7 +755,7 @@ fun LyricsView(
                     // Signed distance from the line being sung. The shell is the only place that
                     // knows it, and it is the ONLY extra input the Apple Music renderer needs —
                     // which is why the split lives here and not inside the line items.
-                    val distanceFromCurrent = if (currentLineIndex < 0) 0 else index - currentLineIndex
+                    val distanceFromCurrent = if (activeLineIndex < 0) 0 else index - activeLineIndex
 
                     // Romanization is its OWN row, between the original and the translation, so the
                     // reader can follow the original script and still know how to pronounce it.
@@ -652,10 +794,10 @@ fun LyricsView(
                                         parsedLine = parsedLine,
                                         translatedWords = translatedWords,
                                         romanizedWords = romanizedWords,
-                                        currentTimeMs = current.current - lyricsOffsetMs,
-                                        isCurrent = index == currentLineIndex,
+                                        playheadState = if (index == activeLineIndex) playheadState else null,
+                                        isCurrent = index == activeLineIndex,
                                         customFontSize = if (appleStyle) AppleMusicLyricFontSize else null,
-                                        glow = if (appleStyle && index == currentLineIndex) AppleMusicActiveLineGlow else null,
+                                        glow = if (appleStyle && index == activeLineIndex) AppleMusicActiveLineGlow else null,
                                         pendingColorOverride = if (appleStyle) AppleMusicPendingWordColor else null,
                                         translatedColorOverride = if (appleStyle) AppleMusicTranslatedColor else null,
                                         translatedStyleOverride =
@@ -677,7 +819,11 @@ fun LyricsView(
                                                 Modifier
                                             } else {
                                                 Modifier.clickable {
-                                                    onLineClick(line.startTimeMs.toFloat() * 100 / timeLine.value.total)
+                                                    val total = timeLine.value.total
+                                                    if (total > 0L) {
+                                                        userScrolledManually = false
+                                                        onLineClick(line.startTimeMs.toFloat() * 100 / total)
+                                                    }
                                                 }
                                             },
                                     )
@@ -692,7 +838,7 @@ fun LyricsView(
                                         // be here too: [allLinesCurrent] already lifts this line's
                                         // opacity to full through appleMusicLyricFocus, so without it
                                         // the line would come out fully opaque in grey ink.
-                                        isCurrent = index == currentLineIndex || allLinesCurrent,
+                                        isCurrent = index == activeLineIndex || allLinesCurrent,
                                         romanizedWords = romanizedWords,
                                     )
                                 } else {
@@ -700,13 +846,17 @@ fun LyricsView(
                                     LyricsLineItem(
                                         originalWords = words,
                                         translatedWords = translatedWords,
-                                        isBold = index <= currentLineIndex,
-                                        isCurrent = index == currentLineIndex,
+                                        isBold = index <= activeLineIndex,
+                                        isCurrent = index == activeLineIndex,
                                         romanizedWords = romanizedWords,
                                         modifier =
                                             Modifier
                                                 .clickable {
-                                                    onLineClick(line.startTimeMs.toFloat() * 100 / timeLine.value.total)
+                                                    val total = timeLine.value.total
+                                                    if (total > 0L) {
+                                                        userScrolledManually = false
+                                                        onLineClick(line.startTimeMs.toFloat() * 100 / total)
+                                                    }
                                                 },
                                     )
                                 }
@@ -724,7 +874,7 @@ fun LyricsView(
                                     // [allLinesCurrent] is the narrow version: it fires only when the
                                     // timestamps genuinely cannot order anything, i.e. an unsynced
                                     // sheet, where every line being current is the wanted result.
-                                    isCurrent = index == currentLineIndex || allLinesCurrent,
+                                    isCurrent = index == activeLineIndex || allLinesCurrent,
                                 )
                             }
 
@@ -734,12 +884,16 @@ fun LyricsView(
                                     originalWords = words,
                                     translatedWords = translatedWords,
                                     romanizedWords = romanizedWords,
-                                    isBold = index <= currentLineIndex || lyricsData.lyrics.syncType != "LINE_SYNCED",
-                                    isCurrent = index == currentLineIndex || lyricsData.lyrics.syncType != "LINE_SYNCED",
+                                    isBold = index <= activeLineIndex || lyricsData.lyrics.syncType != "LINE_SYNCED",
+                                    isCurrent = index == activeLineIndex || lyricsData.lyrics.syncType != "LINE_SYNCED",
                                     modifier =
                                         Modifier
                                             .clickable(enabled = lyricsData.lyrics.syncType == "LINE_SYNCED") {
-                                                onLineClick(line.startTimeMs.toFloat() * 100 / timeLine.value.total)
+                                                val total = timeLine.value.total
+                                                if (total > 0L) {
+                                                    userScrolledManually = false
+                                                    onLineClick(line.startTimeMs.toFloat() * 100 / total)
+                                                }
                                             },
                                 )
                             }
@@ -775,7 +929,11 @@ fun LyricsView(
                                         enabled = lyricsData.lyrics.syncType == "LINE_SYNCED" ||
                                             lyricsData.lyrics.syncType == "RICH_SYNCED",
                                     ) {
-                                        onLineClick(line.startTimeMs.toFloat() * 100 / timeLine.value.total)
+                                        val total = timeLine.value.total
+                                        if (total > 0L) {
+                                            userScrolledManually = false
+                                            onLineClick(line.startTimeMs.toFloat() * 100 / total)
+                                        }
                                     },
                         ) {
                             // Blur spans the FULL width; the gutter is applied inside it. Ordered
@@ -792,8 +950,8 @@ fun LyricsView(
                                         .fillMaxWidth()
                                         .appleMusicLyricFocus(
                                             distanceFromCurrent,
-                                            blurEnabled = !isDragging,
-                                            hasActiveLine = currentLineIndex >= 0,
+                                            blurEnabled = !isDragging && !userScrolledManually,
+                                            hasActiveLine = activeLineIndex >= 0,
                                             allLinesCurrent = allLinesCurrent,
                                         ),
                             ) {
@@ -943,7 +1101,7 @@ fun RichSyncLyricsLineItem(
     // Static text under a line that lights up word by word. Keeping it out of the FlowRow above is
     // deliberate: the wipe is driven by per-word timings this row does not have and must not fake.
     romanizedWords: String? = null,
-    currentTimeMs: Long,
+    currentTimeMs: Long = 0L,
     isCurrent: Boolean,
     customFontSize: TextUnit? = null,
     customPadding: Dp = 12.dp,
@@ -965,19 +1123,18 @@ fun RichSyncLyricsLineItem(
     // FlowRow ignores the lineHeight that spaces the non-wrapped renderer's lines.
     wrappedLineSpacing: Dp = 0.dp,
     modifier: Modifier = Modifier,
+    playheadState: State<Long>? = null,
 ) {
-    val playhead = rememberSmoothPlayhead(currentTimeMs, enabled = isCurrent)
+    val resolvedPlayhead = playheadState ?: if (isCurrent) rememberSmoothPlayhead(currentTimeMs, enabled = true) else null
     val originalWords = remember(parsedLine.words) { parsedLine.words.joinToString(" ") { it.text } }
     val lineDirection = rememberLyricLayoutDirection(originalWords)
 
-    // Remembered on the LINE rather than on the clock. The previous `remember(currentTimeMs, …)`
-    // rebuilt this derived state on every tick, which gave away the one thing derivedStateOf is
-    // for: it notifies only when the RESULT changes. Keyed this way, the playhead can move sixty
-    // times a second inside it while this composable recomposes only when the sung word changes.
-    val currentWordIndex by remember(parsedLine.words, isCurrent) {
+    // Remembered on the LINE rather than on the clock. Keyed this way, only the active line reads
+    // the frame playhead inside derivedStateOf and recomposes only when the sung word changes.
+    val currentWordIndex by remember(parsedLine.words, isCurrent, resolvedPlayhead) {
         derivedStateOf {
-            if (!isCurrent) return@derivedStateOf -1
-            parsedLine.words.indexOfLast { it.startTimeMs <= playhead.value }
+            if (!isCurrent || resolvedPlayhead == null) return@derivedStateOf -1
+            parsedLine.words.indexOfLast { it.startTimeMs <= resolvedPlayhead.value }
         }
     }
 
@@ -1017,8 +1174,7 @@ fun RichSyncLyricsLineItem(
                         wordIndex = index,
                         wordStartTimeMs = wordTiming.startTimeMs,
                         wordEndTimeMs = wordEndTimeMs,
-                        currentTimeMs = currentTimeMs,
-                        playheadMs = playhead,
+                        playheadMs = resolvedPlayhead,
                         isActive = isCurrent && index == currentWordIndex,
                         isPast = isCurrent && index < currentWordIndex,
                         isCurrent = isCurrent,
@@ -1063,11 +1219,8 @@ private fun AnimatedWord(
     wordIndex: Int,
     wordStartTimeMs: Long,
     wordEndTimeMs: Long,
-    currentTimeMs: Long,
-    // The frame-interpolated playhead, taken as State and read ONLY inside the effect below. Taking
-    // it as a plain Long would recompose every word in the line on every frame; a State read from a
-    // suspend body is not a composition read at all.
-    playheadMs: State<Long>,
+    // Read ONLY by the active word so past and future words never recompose per frame.
+    playheadMs: State<Long>?,
     isActive: Boolean,
     isPast: Boolean,
     isCurrent: Boolean,
@@ -1096,87 +1249,33 @@ private fun AnimatedWord(
         return
     }
 
-    // Wall-clock wipe driven by an Animatable.
-    // - Future word (not active, not past): progress stays at 0.
-    // - Active word: snap to current % then animateTo(1f) over the remaining duration of the
-    //   word, in real wall-clock time. Independent of timeline emit rate, so wipe is smooth.
-    // - Past word: snap to 1f.
-
-    // The gap to the next word, and nothing else. Both the floor that used to sit here (100 ms) and
-    // the one on the wipe below (150 ms) made a short word's animation outlive the word, so by the
-    // time it finished the next two or three had started their own and the line looked like the
-    // words were chasing each other. A syllable sung in 40 ms gets a 40 ms wipe; only the divide
-    // needs protecting.
     val wordDurationMs = (wordEndTimeMs - wordStartTimeMs).coerceAtLeast(1L)
-    val anim =
-        remember(wordStartTimeMs, wordEndTimeMs) {
-            val initial =
-                ((currentTimeMs - wordStartTimeMs).toFloat() / wordDurationMs.toFloat())
-                    .coerceIn(0f, 1f)
-            androidx.compose.animation.core.Animatable(initial)
-        }
-
-    LaunchedEffect(wordStartTimeMs, wordEndTimeMs, isActive, isPast) {
-        when {
-            // Nothing to carry over any more: the wipe now runs for exactly the word's own span,
-            // so it reaches 1f on the same frame this flips. Only a word shorter than one frame
-            // arrives unfinished, and that one has no time to animate in anyway.
-            isPast -> anim.snapTo(1f)
-            isActive -> {
-                // From the interpolated playhead, not from the last tick. isActive now flips within
-                // a frame of the word's real start, so a tick-aged `now` would snap the wipe behind
-                // where it belongs and then stretch it past the end of the word.
-                val now = playheadMs.value
-                val current =
-                    ((now - wordStartTimeMs).toFloat() / wordDurationMs.toFloat())
-                        .coerceIn(0f, 1f)
-                anim.snapTo(current)
-                // Exactly what is left of this word, so it finishes as the next one starts and no
-                // two wipes are ever in flight at once.
-                val remainingMs = (wordEndTimeMs - now).coerceAtLeast(0L).toInt().coerceAtLeast(1)
-                anim.animateTo(1f, tween(remainingMs, easing = LinearEasing))
-            }
-            // Future word (not active, not past): keep current value.
-            // Don't snap to 0 — playback position can jitter backwards by a few ms,
-            // briefly flipping isActive false. Snapping would jerk the wipe back.
-        }
-    }
-
-    val progress = anim.value
-
-    // The word's position, resolved by STATE rather than read raw. The Animatable is what carries
-    // the 100ms timeline ticks at frame rate — it snaps to the real position and then animates to
-    // the end of the word in wall-clock time, so the wipe keeps moving between ticks instead of
-    // stepping ten times a second.
-    //
-    // But it is only ever snapped on the isActive and isPast branches. A word that has not started
-    // holds whatever it was constructed with, which is why reading it directly lit the first letter
-    // of every upcoming word. Deciding 0 / anim / 1 from the state fixes that without giving up the
-    // interpolation.
     val wordProgress =
         when {
             isPast -> 1f
-            isActive -> progress
+            isActive -> {
+                val now = playheadMs?.value ?: wordStartTimeMs
+                ((now - wordStartTimeMs).toFloat() / wordDurationMs.toFloat()).coerceIn(0f, 1f)
+            }
             else -> 0f
         }
 
     // AMLL's emphasis strengths, derived from the word's OWN duration.
-    val emphasisDurationMs = max(EMP_MIN_DURATION_MS, wordDurationMs.toFloat())
-    val amount =
-        if (glow == null) {
-            0f
-        } else {
-            val raw = emphasisDurationMs / EMP_AMOUNT_REF_MS
-            val shaped = if (raw > 1f) sqrt(raw) else raw * raw * raw
-            min(EMP_AMOUNT_CAP, shaped * EMP_AMOUNT_GAIN * if (isLastWord) EMP_LAST_WORD_AMOUNT else 1f)
-        }
-    val blurAmount =
-        if (glow == null) {
-            0f
-        } else {
-            val raw = emphasisDurationMs / EMP_BLUR_REF_MS
-            val shaped = if (raw > 1f) sqrt(raw) else raw * raw * raw
-            min(EMP_BLUR_CAP, shaped * EMP_BLUR_GAIN * if (isLastWord) EMP_LAST_WORD_BLUR else 1f)
+    val (amount, blurAmount) =
+        remember(glow != null, wordDurationMs, isLastWord) {
+            if (glow == null) {
+                0f to 0f
+            } else {
+                val emphasisDurationMs = max(EMP_MIN_DURATION_MS, wordDurationMs.toFloat())
+                val rawAmt = emphasisDurationMs / EMP_AMOUNT_REF_MS
+                val shapedAmt = if (rawAmt > 1f) sqrt(rawAmt) else rawAmt * rawAmt * rawAmt
+                val amt = min(EMP_AMOUNT_CAP, shapedAmt * EMP_AMOUNT_GAIN * if (isLastWord) EMP_LAST_WORD_AMOUNT else 1f)
+
+                val rawBlur = emphasisDurationMs / EMP_BLUR_REF_MS
+                val shapedBlur = if (rawBlur > 1f) sqrt(rawBlur) else rawBlur * rawBlur * rawBlur
+                val blur = min(EMP_BLUR_CAP, shapedBlur * EMP_BLUR_GAIN * if (isLastWord) EMP_LAST_WORD_BLUR else 1f)
+                amt to blur
+            }
         }
     // The flare's on/off, animated instead of switched. A word that has just been sung keeps its
     // light for FLARE_FADE_MS while the next word's comes up, so the hand-over happens across the
@@ -1228,7 +1327,7 @@ private fun AnimatedWord(
                 fontPx = fontPx,
             )
         } else {
-            val chars = word.toCharArray()
+            val chars = remember(word) { word.toCharArray() }
             val charCount = chars.size.coerceAtLeast(1)
             // A Latin word keeps its character order even inside an RTL line.
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
