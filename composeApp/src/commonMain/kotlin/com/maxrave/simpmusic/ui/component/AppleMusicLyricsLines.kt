@@ -8,15 +8,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
-import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -24,6 +24,7 @@ import com.maxrave.simpmusic.Platform
 import com.maxrave.simpmusic.getPlatform
 import com.maxrave.simpmusic.ui.theme.typo
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Apple Music renders EVERY lyric line at the same size — what separates the line being sung from
@@ -154,6 +155,30 @@ internal val AppleMusicActiveLineGlow = Shadow(color = Color.White, offset = Off
 // word to flare, and lighting the whole line instead just makes it look smudged — the sung line is
 // marked by being WHITE against grey, and that is all.
 
+private class CachedBlurEffectHolder {
+    private var lastQuantizedPx = -1f
+    private var lastTileMode: TileMode? = null
+    private var cachedEffect: BlurEffect? = null
+
+    fun get(
+        radiusPx: Float,
+        tileMode: TileMode,
+    ): BlurEffect? {
+        val quantized = (radiusPx * 2f).roundToInt() / 2f
+        if (quantized <= 0f) {
+            lastQuantizedPx = 0f
+            cachedEffect = null
+            return null
+        }
+        if (quantized != lastQuantizedPx || tileMode != lastTileMode || cachedEffect == null) {
+            lastQuantizedPx = quantized
+            lastTileMode = tileMode
+            cachedEffect = BlurEffect(quantized, quantized, tileMode)
+        }
+        return cachedEffect
+    }
+}
+
 /**
  * Depth-of-field treatment for one lyric line. [distanceFromCurrent] is signed line distance from
  * the line being sung; its magnitude drives both blur and dimming.
@@ -200,37 +225,19 @@ fun Modifier.appleMusicLyricFocus(
             else -> (1f - distance * ALPHA_FALLOFF_PER_LINE).coerceAtLeast(MIN_LINE_ALPHA)
         }
 
-    val blurRadius by animateDpAsState(targetValue = targetBlur, animationSpec = tween(400), label = "appleMusicLyricBlur")
-    val lineAlpha by animateFloatAsState(targetValue = targetAlpha, animationSpec = tween(400), label = "appleMusicLyricAlpha")
+    // Read state inside graphicsLayer so the 400ms tween runs in the draw/render layer without recomposing lines.
+    val blurRadiusState = animateDpAsState(targetValue = targetBlur, animationSpec = tween(400), label = "appleMusicLyricBlur")
+    val lineAlphaState = animateFloatAsState(targetValue = targetAlpha, animationSpec = tween(400), label = "appleMusicLyricAlpha")
+    val blurCache = remember { CachedBlurEffectHolder() }
+    val isDesktop = remember { getPlatform() == Platform.Desktop }
+    val tileMode = if (isDesktop) TileMode.Clamp else TileMode.Decal
 
-    // alpha BEFORE blur: blurring an already-faded line keeps the two effects independent, whereas
-    // fading a blurred layer washes the blur out into a flat smear.
-    return this
-        .alpha(lineAlpha)
-        .then(
-            if (blurRadius > 0.dp) {
-                // Unbounded, NOT the default, on Android. blur(radius) alone uses
-                // BlurredEdgeTreatment.Rectangle, which clips the blur to the line's own bounds —
-                // so the softened glyphs get sliced off square at the edges and the line reads as a
-                // smudged block rather than an out-of-focus word. Unbounded lets the blur bleed
-                // past the bounds, which is what makes it look like depth of field.
-                //
-                // Desktop cannot have that. Each line is a LazyColumn item and skiko clips an item
-                // to its own bounds, so the part Unbounded deliberately paints outside gets sliced
-                // off at the item boundary — a hard horizontal tear across the line below the one
-                // being sung. Rectangle keeps every pixel inside the item, which is what that clip
-                // wants. The trade is softer-looking edges, only on lines already out of focus.
-                val edge =
-                    if (getPlatform() == Platform.Desktop) {
-                        BlurredEdgeTreatment.Rectangle
-                    } else {
-                        BlurredEdgeTreatment.Unbounded
-                    }
-                Modifier.blur(blurRadius, edge)
-            } else {
-                Modifier
-            },
-        )
+    return this.graphicsLayer {
+        alpha = lineAlphaState.value
+        val effect = blurCache.get(blurRadiusState.value.toPx(), tileMode)
+        renderEffect = effect
+        clip = effect != null && isDesktop
+    }
 }
 
 /**

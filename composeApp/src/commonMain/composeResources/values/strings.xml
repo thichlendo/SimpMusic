@@ -357,6 +357,9 @@
     <string name="audio_delay_description">Echo the sound with a repeating delay</string>
     <string name="audio_reverb">Reverb</string>
     <string name="audio_reverb_description">Place the music in a room, hall or plate</string>
+    <string name="karaoke_mode">Karaoke Mode (Vocal Remover)</string>
+    <string name="karaoke_mode_description">Separate center vocals while preserving bass and stereo beat</string>
+    <string name="karaoke_guide_vocal">Guide Vocal (0% - 40%)</string>
     <string name="effect_time">Time</string>
     <string name="effect_feedback">Feedback</string>
     <string name="effect_mix">Mix</string>

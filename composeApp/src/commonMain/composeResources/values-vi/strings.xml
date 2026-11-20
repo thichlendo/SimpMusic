@@ -347,6 +347,9 @@
     <string name="audio_delay_description">Echo âm thanh với độ trễ lặp lại</string>
     <string name="audio_reverb">Độ vang</string>
     <string name="audio_reverb_description">Đưa âm nhạc vào trong một phòng, hội trường hoặc tấm kim loại</string>
+    <string name="karaoke_mode">Chế độ Karaoke (Tách lời &amp; Beat)</string>
+    <string name="karaoke_mode_description">Tách giọng hát kênh giữa và giữ nguyên tiếng bass, nhạc nền</string>
+    <string name="karaoke_guide_vocal">Giọng ca sĩ dẫn nhịp (0% - 40%)</string>
     <string name="effect_time">Thời gian</string>
     <string name="effect_feedback">Phản hồi</string>
     <string name="effect_mix">Trộn</string>

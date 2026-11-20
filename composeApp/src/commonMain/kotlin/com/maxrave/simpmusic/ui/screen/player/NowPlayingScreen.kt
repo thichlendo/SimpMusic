@@ -212,7 +212,7 @@ fun NowPlayingScreenContent(
     // Which Now Playing style renders the content layer (Settings → Now Playing style).
     val nowPlayingStyle by sharedViewModel
         .getNowPlayingStyle()
-        .collectAsStateWithLifecycle(initialValue = DataStoreManager.NOW_PLAYING_STYLE_SPOTIFY)
+        .collectAsStateWithLifecycle(initialValue = DataStoreManager.NOW_PLAYING_STYLE_APPLE_MUSIC)
 
     // Artwork Pager state — Spotify-style horizontal swipe between queue tracks.
     // The pager wraps the Canvas + Thumbnail layers. Controller layout below stays fixed.
@@ -992,8 +992,8 @@ fun NowPlayingScreenContent(
                 actions = actions,
             )
 
-        DataStoreManager.NOW_PLAYING_STYLE_APPLE_MUSIC ->
-            NowPlayingContentAppleMusic(
+        DataStoreManager.NOW_PLAYING_STYLE_SPOTIFY ->
+            NowPlayingContentSpotify(
                 state = state,
                 actions = actions,
             )
@@ -1005,7 +1005,7 @@ fun NowPlayingScreenContent(
             )
 
         else ->
-            NowPlayingContentSpotify(
+            NowPlayingContentAppleMusic(
                 state = state,
                 actions = actions,
             )

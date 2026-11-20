@@ -1874,6 +1874,12 @@ class SettingsViewModel(
     private var _reverbMix: MutableStateFlow<Float> = MutableStateFlow(DEFAULT_REVERB_MIX)
     val reverbMix: StateFlow<Float> = _reverbMix
 
+    private var _karaokeEnabled: MutableStateFlow<Boolean> = MutableStateFlow(false)
+    val karaokeEnabled: StateFlow<Boolean> = _karaokeEnabled
+
+    private var _karaokeGuideVocalLevel: MutableStateFlow<Float> = MutableStateFlow(0f)
+    val karaokeGuideVocalLevel: StateFlow<Float> = _karaokeGuideVocalLevel
+
     /**
      * Guards the effect collectors the same way [equalizerCollectorsStarted] guards the curve's.
      *
@@ -1902,6 +1908,8 @@ class SettingsViewModel(
                 }
             }
             launch { dataStoreManager.reverbMix.collect { _reverbMix.emit(it) } }
+            launch { dataStoreManager.karaokeEnabled.collect { _karaokeEnabled.emit(it == DataStoreManager.TRUE) } }
+            launch { dataStoreManager.karaokeGuideVocalLevel.collect { _karaokeGuideVocalLevel.emit(it.coerceIn(0f, MAX_KARAOKE_GUIDE_VOCAL_LEVEL)) } }
         }
     }
 
@@ -1931,6 +1939,24 @@ class SettingsViewModel(
 
     fun setReverbMix(mix: Float) {
         viewModelScope.launch { dataStoreManager.setReverbMix(mix) }
+    }
+
+    fun setKaraokeEnabled(enabled: Boolean) {
+        _karaokeEnabled.value = enabled
+        mediaPlayerHandler.player.setKaraoke(enabled, _karaokeGuideVocalLevel.value)
+        viewModelScope.launch { dataStoreManager.setKaraokeEnabled(enabled) }
+    }
+
+    fun previewKaraokeGuideVocalLevel(level: Float) {
+        val clamped = if (level.isNaN()) 0f else level.coerceIn(0f, MAX_KARAOKE_GUIDE_VOCAL_LEVEL)
+        mediaPlayerHandler.player.setKaraoke(_karaokeEnabled.value, clamped)
+    }
+
+    fun setKaraokeGuideVocalLevel(level: Float) {
+        val clamped = if (level.isNaN()) 0f else level.coerceIn(0f, MAX_KARAOKE_GUIDE_VOCAL_LEVEL)
+        _karaokeGuideVocalLevel.value = clamped
+        mediaPlayerHandler.player.setKaraoke(_karaokeEnabled.value, clamped)
+        viewModelScope.launch { dataStoreManager.setKaraokeGuideVocalLevel(clamped) }
     }
 
     /**
@@ -2197,3 +2223,5 @@ const val DEFAULT_DELAY_MIX = 0.3f
 
 /** See `DataStoreManagerImpl.reverbMix`. */
 const val DEFAULT_REVERB_MIX = 0.35f
+
+const val MAX_KARAOKE_GUIDE_VOCAL_LEVEL = 0.4f
